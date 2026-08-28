@@ -57,6 +57,12 @@ if (!isStaticMode()) {
   // latest.
   const CHANGELOG: { version: string; notes: string[] }[] = [
     {
+      version: "0.24.0",
+      notes: [
+        "Replies you typed on your phone no longer fade after an hour - both halves of a chat now read in full.",
+      ],
+    },
+    {
       version: "0.23.0",
       notes: [
         "Fixed a message loss that was easy to mistake for the channel being asleep: a message that arrived within a fraction of a second of Claude sending a reply was filed as old backlog, so you got no notification, no ack, and any photo or voice note in it was never downloaded. It was likeliest right after a long reply, because each chunk reopened the window.",

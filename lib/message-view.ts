@@ -30,8 +30,8 @@ export function awaitingReply(entry: {
  *  Everything that is context rather than a to-do (the owner's own lines,
  *  the agent's replies, and a group's unaddressed chatter) is what "what
  *  was this chat about" is read from, and a day is far too short for that
- *  (owner, 2026-08-27). The owner's-text expiry (OWNER_TEXT_TTL_MS) is a
- *  render rule and is untouched by this. */
+ *  (owner, 2026-08-27). This is the ONLY lifetime a stored line has: what is
+ *  in the log is what catch_up shows, both sides alike. */
 export const INBOUND_TTL_MS = 24 * 60 * 60 * 1000;
 export const CONTEXT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -55,12 +55,6 @@ export function keepLogLine(
 
 /** Suffix on the sender of an entry that was never addressed to the agent. */
 export const NOT_ADDRESSED = " (not addressed to Claude)";
-
-/** Owner-authored text is visible this long, then collapses. */
-export const OWNER_TEXT_TTL_MS = 60 * 60 * 1000;
-
-/** What an owner entry's text becomes once it expires. */
-export const EXPIRED_TEXT = "replied (text expired)";
 
 /** How many messages per chat catch_up replays. */
 export const RECENT_LIMIT = 5;
@@ -89,22 +83,23 @@ export function recentBothSides<
   ].sort(byTs);
 }
 
-/** How one entry renders at time `now`. The ONLY place the expiry rule and
- *  the owner label exist. */
+/** How one entry renders. The ONLY place the owner label exists. Text is
+ *  shown verbatim for every line the log still holds: an owner hand reply
+ *  used to fade to "replied (text expired)" after an hour, which left every
+ *  chat older than that reading one-sided - their half in full, the owner's
+ *  half blanked - exactly when catch_up is wanted (owner, 2026-08-28).
+ *  keepLogLine is now the whole retention story. */
 export function renderLogEntry(
   entry: ViewableEntry,
   ownerName: string,
-  now: number = Date.now(),
 ): { who: string; text: string } {
-  const who =
-    entry.by === "owner"
-      ? ownerName
-      : entry.routed === false
-        ? `${entry.user}${NOT_ADDRESSED}`
-        : entry.user;
-  if (entry.by !== "owner") return { who, text: entry.text };
-
-  const age = now - Date.parse(entry.ts);
-  const expired = !Number.isFinite(age) || age > OWNER_TEXT_TTL_MS;
-  return { who, text: expired ? EXPIRED_TEXT : entry.text };
+  return {
+    who:
+      entry.by === "owner"
+        ? ownerName
+        : entry.routed === false
+          ? `${entry.user}${NOT_ADDRESSED}`
+          : entry.user,
+    text: entry.text,
+  };
 }

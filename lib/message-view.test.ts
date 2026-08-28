@@ -26,22 +26,24 @@ const owner = (over: Partial<ViewableEntry> = {}): ViewableEntry => ({
 
 describe("renderLogEntry", () => {
   test("owner entry, 30 minutes old: text intact", () => {
-    expect(renderLogEntry(owner(), "Kaushik", now)).toEqual({
+    expect(renderLogEntry(owner(), "Kaushik")).toEqual({
       who: "Kaushik",
       text: "see you at six",
     });
   });
 
-  test("owner entry, 61 minutes old: expired", () => {
-    expect(
-      renderLogEntry(owner({ ts: minutesAgo(61) }), "Kaushik", now),
-    ).toEqual({ who: "Kaushik", text: "replied (text expired)" });
+  test("owner entry, 6 days old: text still intact, no expiry at any age", () => {
+    expect(renderLogEntry(owner({ ts: hoursAgo(6 * 24) }), "Kaushik")).toEqual({
+      who: "Kaushik",
+      text: "see you at six",
+    });
   });
 
-  test("owner entry, exactly 60 minutes old: boundary is strict >, not expired", () => {
-    expect(
-      renderLogEntry(owner({ ts: minutesAgo(60) }), "Kaushik", now),
-    ).toEqual({ who: "Kaushik", text: "see you at six" });
+  test("owner entry with an unparseable ts: ts is not read, text intact", () => {
+    expect(renderLogEntry(owner({ ts: "not-a-date" }), "Kaushik")).toEqual({
+      who: "Kaushik",
+      text: "see you at six",
+    });
   });
 
   test("bot out entry, 25 hours old: never expires, who stays You", () => {
@@ -51,7 +53,7 @@ describe("renderLogEntry", () => {
       ts: hoursAgo(25),
       direction: "out",
     };
-    expect(renderLogEntry(entry, "Kaushik", now)).toEqual({
+    expect(renderLogEntry(entry, "Kaushik")).toEqual({
       who: "You",
       text: "on my way",
     });
@@ -64,7 +66,7 @@ describe("renderLogEntry", () => {
       ts: hoursAgo(25),
       direction: "in",
     };
-    expect(renderLogEntry(entry, "Kaushik", now)).toEqual({
+    expect(renderLogEntry(entry, "Kaushik")).toEqual({
       who: "Ravi",
       text: "sounds good",
     });
@@ -78,7 +80,7 @@ describe("renderLogEntry", () => {
       direction: "in",
       routed: false,
     };
-    expect(renderLogEntry(entry, "Kaushik", now)).toEqual({
+    expect(renderLogEntry(entry, "Kaushik")).toEqual({
       who: `Ravi${NOT_ADDRESSED}`,
       text: "meeting moved to 3",
     });
@@ -86,13 +88,7 @@ describe("renderLogEntry", () => {
 
   test("owner entry is never marked not-addressed even with routed:false present", () => {
     const entry = owner({ user: "Kaushik N", text: "ok", routed: false });
-    expect(renderLogEntry(entry, "Kaushik", now).who).toBe("Kaushik");
-  });
-
-  test("owner entry with an unparseable ts: fails closed (expired)", () => {
-    expect(renderLogEntry(owner({ ts: "not-a-date" }), "Kaushik", now)).toEqual(
-      { who: "Kaushik", text: "replied (text expired)" },
-    );
+    expect(renderLogEntry(entry, "Kaushik").who).toBe("Kaushik");
   });
 });
 
