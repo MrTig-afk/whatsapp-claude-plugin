@@ -144,7 +144,7 @@ full for as long as the line is kept, the same as theirs, so a chat never comes 
 How long that is, is the only retention rule: the line stays in
 `~/.whatsapp-channel/messages.jsonl` for **7 days**, the same as every other
 context line there (replies Claude sent for you, and a mention-gated group's unaddressed chatter).
-An **unanswered** message addressed to Claude is kept for **24 hours** only - it is a to-do, not context; once answered it is context and stays the week.
+An **unanswered** message addressed to Claude is kept exactly as long as everything else. It used to expire after 24 hours, which meant the one message you had not got to yet was the first thing to disappear. Set `WHATSAPP_MESSAGE_TTL_DAYS` to keep lines for a different number of days; anything that is not a positive number is ignored and the 7-day default stands.
 Backfill goes exactly as far as WhatsApp's own offline queue: whatever was sent while no server
 was connected is delivered on the next reconnect and logged then; anything older than that queue
 is gone for good.

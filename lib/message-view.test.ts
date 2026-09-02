@@ -143,35 +143,47 @@ describe("recentBothSides", () => {
 });
 
 describe("keepLogLine", () => {
-  test("an UNANSWERED routed inbound lives 24h; an answered one is context and lives 7 days", () => {
-    expect(keepLogLine({ ts: hoursAgo(23), direction: "in" }, now)).toBe(true);
-    expect(keepLogLine({ ts: hoursAgo(25), direction: "in" }, now)).toBe(false);
-    expect(
-      keepLogLine({ ts: hoursAgo(25), direction: "in", replied: true }, now),
-    ).toBe(true);
-    expect(
-      keepLogLine(
-        { ts: hoursAgo(8 * 24), direction: "in", replied: true },
-        now,
-      ),
-    ).toBe(false);
+  test("ONE horizon: an unanswered inbound lives the same 7 days as everything else", () => {
+    // Regression for #20. An unanswered inbound used to die at 24h, so the
+    // message you had not got to yet was the first thing to vanish.
+    expect(keepLogLine({ ts: hoursAgo(25), direction: "in" }, now)).toBe(true);
+    expect(keepLogLine({ ts: hoursAgo(6 * 24), direction: "in" }, now)).toBe(
+      true,
+    );
+    expect(keepLogLine({ ts: hoursAgo(8 * 24), direction: "in" }, now)).toBe(
+      false,
+    );
   });
-  test("context lines live 7 days: unaddressed group chatter, own replies, owner hand replies", () => {
+  test("every other kind of line keeps the same 7 days", () => {
     const sixDays = hoursAgo(6 * 24);
     const eightDays = hoursAgo(8 * 24);
-    expect(
-      keepLogLine({ ts: sixDays, direction: "in", routed: false }, now),
-    ).toBe(true);
+    for (const entry of [
+      { ts: sixDays, direction: "in" as const, routed: false as const },
+      { ts: sixDays, direction: "in" as const, replied: true },
+      { ts: sixDays, direction: "out" as const },
+      { ts: sixDays, direction: "out" as const, by: "owner" as const },
+    ]) {
+      expect(keepLogLine(entry, now)).toBe(true);
+    }
     expect(
       keepLogLine({ ts: eightDays, direction: "in", routed: false }, now),
     ).toBe(false);
-    expect(keepLogLine({ ts: sixDays, direction: "out" }, now)).toBe(true);
     expect(
-      keepLogLine({ ts: sixDays, direction: "out", by: "owner" }, now),
+      keepLogLine({ ts: eightDays, direction: "out", by: "owner" }, now),
+    ).toBe(false);
+  });
+  test("a caller-supplied ttl wins over the default (WHATSAPP_MESSAGE_TTL_DAYS)", () => {
+    const day = 24 * 60 * 60 * 1000;
+    const tenDays = hoursAgo(10 * 24);
+    expect(keepLogLine({ ts: tenDays, direction: "in" }, now)).toBe(false);
+    expect(keepLogLine({ ts: tenDays, direction: "in" }, now, 14 * day)).toBe(
+      true,
+    );
+    expect(
+      keepLogLine({ ts: hoursAgo(2), direction: "in" }, now, 1 * day),
     ).toBe(true);
   });
-  test("a legacy line with no direction is treated as routed inbound; an unparseable ts is dropped", () => {
-    expect(keepLogLine({ ts: hoursAgo(25) }, now)).toBe(false);
+  test("an unparseable ts is dropped whatever the ttl", () => {
     expect(keepLogLine({ ts: "nope" }, now)).toBe(false);
   });
 });

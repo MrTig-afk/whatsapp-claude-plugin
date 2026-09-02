@@ -62,8 +62,8 @@ import { logContainsId } from "./lib/message-log-probe";
 import { ownerStamp, parsePermissionReply } from "./lib/owner";
 import {
   awaitingReply,
-  CONTEXT_TTL_MS,
   keepLogLine,
+  MESSAGE_TTL_MS,
   RECENT_LIMIT,
   recentBothSides,
   renderLogEntry,
@@ -181,6 +181,14 @@ const ACCOUNT_NAME = process.env.WHATSAPP_ACCOUNT_NAME || "";
 // Opt out per-terminal with WHATSAPP_QUIET=1 - never a config file, so it
 // can't silently persist past the session that set it.
 const AUTO_NOTIFY = process.env.WHATSAPP_QUIET !== "1";
+// How long any stored log line lives, in days (why one horizon: MESSAGE_TTL_MS
+// in lib/message-view.ts). Read here, not in the lib, so the lib stays pure.
+// Anything not a positive number falls back rather than pruning the log away.
+const TTL_DAYS = Number(process.env.WHATSAPP_MESSAGE_TTL_DAYS);
+const LOG_TTL_MS =
+  Number.isFinite(TTL_DAYS) && TTL_DAYS > 0
+    ? TTL_DAYS * 24 * 60 * 60 * 1000
+    : MESSAGE_TTL_MS;
 // import.meta.dir is this file's own directory, not CWD, so it's correct
 // regardless of where the process was launched from.
 const WIZARD_CMD = wizardCmd(import.meta.dir);
@@ -2507,9 +2515,9 @@ function pruneLidMap(
 
 /** Every eagerly-downloaded image and voice note from every allowed chat lands
  *  in inbox/ and nothing ever removed it, so any group member could fill the
- *  disk one photo at a time. Same window as a context log line
- *  (CONTEXT_TTL_MS): once the line that references the file is gone, the file
- *  is unreachable anyway. Rides the same hourly tick as pruneMessageLog.
+ *  disk one photo at a time. Same window as the log line that points at it
+ *  (LOG_TTL_MS): once that line is gone, the file is unreachable anyway.
+ *  Rides the same hourly tick as pruneMessageLog.
  *
  *  Deliberately narrow: only regular files, only direct children of INBOX_DIR
  *  (no recursion, so a directory someone drops in there is left alone rather
@@ -2517,7 +2525,7 @@ function pruneLidMap(
  *  readdir entry, so nothing outside INBOX_DIR is reachable from here. */
 function pruneInbox(): void {
   try {
-    const cutoff = Date.now() - CONTEXT_TTL_MS;
+    const cutoff = Date.now() - LOG_TTL_MS;
     let removed = 0;
     for (const name of readdirSync(INBOX_DIR)) {
       const path = join(INBOX_DIR, name);
@@ -2537,7 +2545,7 @@ function pruneInbox(): void {
   }
 }
 
-/** Prune the log: open inbounds after 24h, context lines after 7 days (keepLogLine) */
+/** Prune the log: every line older than LOG_TTL_MS goes (keepLogLine) */
 function pruneMessageLog(): void {
   // First: pruneMessageLog returns early when messages.jsonl does not exist
   // yet, and sent.jsonl can exist without it (pairing notices go to chats
@@ -2547,14 +2555,14 @@ function pruneMessageLog(): void {
   pruneInbox();
   try {
     if (!existsSync(MESSAGE_LOG)) return;
-    // Two lifetimes, decided in lib/message-view.ts: a routed inbound is a
-    // to-do and lives a day; context lines live a week.
+    // One lifetime for every line, decided in lib/message-view.ts and
+    // overridable with WHATSAPP_MESSAGE_TTL_DAYS.
     const now = Date.now();
     const lines = readFileSync(MESSAGE_LOG, "utf8").split("\n").filter(Boolean);
     const kept = lines.filter((line) => {
       try {
         const entry = JSON.parse(line) as MessageLogEntry;
-        return keepLogLine(entry, now);
+        return keepLogLine(entry, now, LOG_TTL_MS);
       } catch {
         return false;
       }
@@ -2940,7 +2948,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () =>
           {
             name: "catch_up",
             description:
-              'Recover conversation context. Pass `chat` (a chat_id, or part of a group or contact name, case-insensitive) to get ONE chat - do this before drafting a message to someone, so the room is in view without dumping every chat. Without `chat`: every chat. For every chat with a line still in the log (up to 7 days of context; an unanswered message addressed to you lives 24h), returns the recent messages in BOTH directions (sender name for incoming, "You" for a reply this agent sent, and the owner\'s own name for a message they typed on their phone), each chat\'s unreplied count, and the open (unchecked) items from ~/.whatsapp-channel/tasks.md. Call this on session start, right after status. When you take on a multi-step task from a chat, append a line to tasks.md ("- [ ] [YYYY-MM-DD HH:MM] [chat] task — progress note"), keep the progress note updated as you work, and flip it to "- [x]" when done, so a future session can resume it after a crash.',
+              'Recover conversation context. Pass `chat` (a chat_id, or part of a group or contact name, case-insensitive) to get ONE chat - do this before drafting a message to someone, so the room is in view without dumping every chat. Without `chat`: every chat. For every chat with a line still in the log (7 days by default, every line alike - WHATSAPP_MESSAGE_TTL_DAYS changes it), returns the recent messages in BOTH directions (sender name for incoming, "You" for a reply this agent sent, and the owner\'s own name for a message they typed on their phone), each chat\'s unreplied count, and the open (unchecked) items from ~/.whatsapp-channel/tasks.md. Call this on session start, right after status. When you take on a multi-step task from a chat, append a line to tasks.md ("- [ ] [YYYY-MM-DD HH:MM] [chat] task — progress note"), keep the progress note updated as you work, and flip it to "- [x]" when done, so a future session can resume it after a crash.',
             inputSchema: {
               type: "object",
               properties: {

@@ -25,32 +25,24 @@ export function awaitingReply(entry: {
   );
 }
 
-/** How long a log line lives. A ROUTED inbound - something addressed to
- *  the agent, possibly still unanswered - is a to-do and goes stale in a day.
- *  Everything that is context rather than a to-do (the owner's own lines,
- *  the agent's replies, and a group's unaddressed chatter) is what "what
- *  was this chat about" is read from, and a day is far too short for that
- *  (owner, 2026-08-27). This is the ONLY lifetime a stored line has: what is
- *  in the log is what catch_up shows, both sides alike. */
-export const INBOUND_TTL_MS = 24 * 60 * 60 * 1000;
-export const CONTEXT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** How long a log line lives - ONE lifetime for every line, whatever it is.
+ *  An unanswered inbound used to go stale in a day while context lived a
+ *  week, so the very message you had not got to yet was the first thing to
+ *  disappear, and a chat you opened on day two showed replies to a question
+ *  that was no longer there. A single horizon means what is in the log is
+ *  what catch_up shows, both sides alike (owner, 2026-09-02).
+ *  The caller may pass its own `ttlMs` (server.ts reads
+ *  WHATSAPP_MESSAGE_TTL_DAYS); this stays the default so the lib is pure. */
+export const MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function keepLogLine(
-  entry: {
-    ts: string;
-    direction?: "in" | "out";
-    by?: "owner";
-    routed?: false;
-    replied?: boolean;
-  },
+  entry: { ts: string },
   now: number = Date.now(),
+  ttlMs: number = MESSAGE_TTL_MS,
 ): boolean {
   const t = Date.parse(entry.ts);
   if (!Number.isFinite(t)) return false;
-  // An answered inbound is no longer a to-do - it is the other half of a
-  // conversation whose reply we keep a week, so it stays a week too.
-  const openInbound = entry.by !== "owner" && awaitingReply(entry);
-  return now - t < (openInbound ? INBOUND_TTL_MS : CONTEXT_TTL_MS);
+  return now - t < ttlMs;
 }
 
 /** Suffix on the sender of an entry that was never addressed to the agent. */
