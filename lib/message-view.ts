@@ -33,7 +33,55 @@ export function awaitingReply(entry: {
  *  what catch_up shows, both sides alike (owner, 2026-09-02).
  *  The caller may pass its own `ttlMs` (server.ts reads
  *  WHATSAPP_MESSAGE_TTL_DAYS); this stays the default so the lib is pure. */
-export const MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const DAY_MS = 24 * 60 * 60 * 1000;
+export const MESSAGE_TTL_MS = 7 * DAY_MS;
+
+/** The bounds on WHATSAPP_MESSAGE_TTL_DAYS. Neither end is arbitrary, and the
+ *  LOW end is the destructive one.
+ *
+ *  Ceiling: the same horizon is pruneInbox's cutoff, and pruneInbox is the only
+ *  thing stopping inbox/ from filling the disk one photo at a time. An
+ *  unbounded value silently disables that guard.
+ *
+ *  Floor: the unit is DAYS, but Number() happily accepts 0.01 - about fourteen
+ *  minutes. On the next hourly tick that deletes every attachment in inbox/
+ *  older than fourteen minutes, including a photo whose path catch_up just
+ *  handed the agent and which it is about to read, and empties messages.jsonl
+ *  with it. Rejecting <= 0 is not enough; a small positive is the same
+ *  accident with a friendlier-looking value. */
+export const MIN_TTL_DAYS = 1;
+export const MAX_TTL_DAYS = 30;
+
+/** Resolve WHATSAPP_MESSAGE_TTL_DAYS to a horizon plus the diagnostic its
+ *  caller should log. `note` is "" when there is nothing to say - the variable
+ *  was unset, or its value was accepted as given. Pure so the lib stays pure:
+ *  server.ts reads the environment and passes the string in. */
+export function resolveTtlMs(raw: string | undefined): {
+  ms: number;
+  note: string;
+} {
+  if (raw === undefined || raw.trim() === "")
+    return { ms: MESSAGE_TTL_MS, note: "" };
+  // The note goes to diag.log, a newline-delimited file read back as records,
+  // so the value is quoted and truncated rather than interpolated raw - a
+  // value containing a newline would otherwise forge extra log lines. Same
+  // standard as maskJid/neutralizeChannelTag elsewhere; owner-controlled
+  // input, but this file does not make exceptions for that.
+  const shown = JSON.stringify(raw).slice(0, 40);
+  const days = Number(raw);
+  if (!Number.isFinite(days) || days <= 0)
+    return {
+      ms: MESSAGE_TTL_MS,
+      note: `WHATSAPP_MESSAGE_TTL_DAYS=${shown} ignored (not a positive number); keeping ${MESSAGE_TTL_MS / DAY_MS} days`,
+    };
+  const clamped = Math.min(Math.max(days, MIN_TTL_DAYS), MAX_TTL_DAYS);
+  if (clamped !== days)
+    return {
+      ms: clamped * DAY_MS,
+      note: `WHATSAPP_MESSAGE_TTL_DAYS=${shown} clamped to ${clamped} days (allowed ${MIN_TTL_DAYS}-${MAX_TTL_DAYS}); inbox/ pruning uses the same horizon`,
+    };
+  return { ms: days * DAY_MS, note: "" };
+}
 
 export function keepLogLine(
   entry: { ts: string },

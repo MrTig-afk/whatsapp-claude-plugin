@@ -60,7 +60,7 @@ if (!isStaticMode()) {
       version: "0.24.0",
       notes: [
         "Replies you typed on your phone no longer fade after an hour - both halves of a chat now read in full.",
-        "An unanswered message no longer expires a day before everything else. Every line now lives 7 days; set WHATSAPP_MESSAGE_TTL_DAYS to change it.",
+        "An unanswered message no longer expires a day before everything else. Every line now lives 7 days; set WHATSAPP_MESSAGE_TTL_DAYS to any value from 1 to 30 to change it.",
       ],
     },
     {

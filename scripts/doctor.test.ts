@@ -181,6 +181,25 @@ describe("activity", () => {
     const out = runDoctor(dir);
     expect(out).toContain("[PASS] activity: no stale unreplied messages");
   });
+  test("an unreplied message older than a day no longer cries wolf", () => {
+    // The 24h inbound expiry used to retire these lines; one 7-day horizon
+    // (0.24.0) does not. Without a ceiling on the window, a single message
+    // nobody ever answered would report a possibly-stuck agent session on
+    // every doctor run for a week.
+    const dir = freshStateDir();
+    const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    writeFileSync(
+      join(dir, "messages.jsonl"),
+      JSON.stringify({ ts: twoDaysAgo, chat_id: "c", replied: false }) + "\n",
+    );
+    const out = runDoctor(dir);
+    expect(out).toContain("[PASS] activity: no stale unreplied messages");
+    expect(out).not.toMatch(/\[WARN\] activity: \d+ inbound message/);
+    // But it must NOT vanish: dropping it from the report entirely would give
+    // a session dead for two days a clean bill of health, which is the exact
+    // case someone runs doctor to diagnose.
+    expect(out).toMatch(/\[INFO\] activity: 1 inbound message\(s\) unreplied/);
+  });
 });
 
 describe("group-configs", () => {

@@ -43,6 +43,10 @@ const INBOX_DIR = join(STATE_DIR, "inbox");
 const DIAG_LOG_FILE = join(STATE_DIR, "diag.log");
 const LID_MAP_FILE = join(STATE_DIR, "lid-map.json");
 const MSG_STALE_SECS = 600; // mirrors scripts/watchdog.sh MSG_STALE_SECS
+// Past this, an unreplied line says "nobody answered", not "the session is
+// stuck", so it stops counting toward the stuck-session warning. See the
+// windowed test in checkActivity.
+const MSG_STALE_MAX_SECS = 24 * 60 * 60;
 // inbox/ has historically had no automatic pruning at all — every downloaded
 // image/voice note from every allowed chat accumulates forever. A few MB per
 // attachment means steady moderate use stays well under this; crossing it
@@ -387,6 +391,7 @@ function checkActivity(): void {
   let lastIn: number | null = null;
   let lastOut: number | null = null;
   let staleUnreplied = 0;
+  let oldUnreplied = 0;
   for (const line of readFileSync(MESSAGE_LOG, "utf8").split("\n")) {
     if (!line.trim()) continue;
     try {
@@ -400,8 +405,19 @@ function checkActivity(): void {
       if ((e.direction ?? "in") === "in") {
         // inbound-default mirrors the server's catch_up logic
         lastIn = Math.max(lastIn ?? 0, t);
-        if (e.replied === false && now - t > MSG_STALE_SECS * 1000)
-          staleUnreplied++;
+        // Split, not filtered. The 24h inbound expiry that used to retire
+        // these lines is gone (one 7-day horizon, 0.24.0), so without an upper
+        // bound a single never-answered message would report a stuck session
+        // on every run for a week. But DROPPING the old ones is its own bug:
+        // a session dead for two days with no new traffic would then report
+        // "no stale unreplied messages" - a clean bill of health for exactly
+        // the case someone runs doctor to diagnose. So the old ones stop
+        // counting as stuck-session evidence and are reported separately.
+        const ageMs = now - t;
+        if (e.replied === false && ageMs > MSG_STALE_SECS * 1000) {
+          if (ageMs < MSG_STALE_MAX_SECS * 1000) staleUnreplied++;
+          else oldUnreplied++;
+        }
       } else {
         lastOut = Math.max(lastOut ?? 0, t);
       }
@@ -424,6 +440,16 @@ function checkActivity(): void {
     );
   } else {
     report("PASS", "activity", "no stale unreplied messages");
+  }
+  // Reported whatever the verdict above, so a long-dead session cannot hide
+  // behind a PASS: these are past the stuck-session window but still on the
+  // retention horizon, and "nobody ever answered" is worth seeing.
+  if (oldUnreplied > 0) {
+    report(
+      "INFO",
+      "activity",
+      `${oldUnreplied} inbound message(s) unreplied for >24h — not counted as a stuck session; check the last-inbound time above if that looks wrong`,
+    );
   }
 }
 

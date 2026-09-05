@@ -144,7 +144,9 @@ full for as long as the line is kept, the same as theirs, so a chat never comes 
 How long that is, is the only retention rule: the line stays in
 `~/.whatsapp-channel/messages.jsonl` for **7 days**, the same as every other
 context line there (replies Claude sent for you, and a mention-gated group's unaddressed chatter).
-An **unanswered** message addressed to Claude is kept exactly as long as everything else. It used to expire after 24 hours, which meant the one message you had not got to yet was the first thing to disappear. Set `WHATSAPP_MESSAGE_TTL_DAYS` to keep lines for a different number of days; anything that is not a positive number is ignored and the 7-day default stands.
+An **unanswered** message addressed to Claude is kept exactly as long as everything else. It used to expire after 24 hours, which meant the one message you had not got to yet was the first thing to disappear. Set `WHATSAPP_MESSAGE_TTL_DAYS` to keep lines for a different number of days. It accepts **1 to 30**: anything that is not a positive number is ignored and the 7-day default stands, and anything outside that range is clamped into it — so `90` gives you 30, not 90. Either way the server says what it did in `diag.log`.
+The ceiling is not red tape. The same horizon prunes `~/.whatsapp-channel/inbox/`, and that prune is the only thing stopping every photo and voice note you have ever received from staying on disk forever; the floor is there because the unit is days and a value like `0.05` would delete an attachment about an hour after it arrived — possibly one Claude was still reading.
+The setting belongs to whichever terminal holds the singleton lock, because only that process prunes. With two terminals open and different values set, the lock holder's value wins, and it changes if that process exits and another is promoted.
 Backfill goes exactly as far as WhatsApp's own offline queue: whatever was sent while no server
 was connected is delivered on the next reconnect and logged then; anything older than that queue
 is gone for good.

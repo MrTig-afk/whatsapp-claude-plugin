@@ -63,10 +63,10 @@ import { ownerStamp, parsePermissionReply } from "./lib/owner";
 import {
   awaitingReply,
   keepLogLine,
-  MESSAGE_TTL_MS,
   RECENT_LIMIT,
   recentBothSides,
   renderLogEntry,
+  resolveTtlMs,
 } from "./lib/message-view";
 import {
   displaySenderName,
@@ -181,14 +181,14 @@ const ACCOUNT_NAME = process.env.WHATSAPP_ACCOUNT_NAME || "";
 // Opt out per-terminal with WHATSAPP_QUIET=1 - never a config file, so it
 // can't silently persist past the session that set it.
 const AUTO_NOTIFY = process.env.WHATSAPP_QUIET !== "1";
-// How long any stored log line lives, in days (why one horizon: MESSAGE_TTL_MS
-// in lib/message-view.ts). Read here, not in the lib, so the lib stays pure.
-// Anything not a positive number falls back rather than pruning the log away.
-const TTL_DAYS = Number(process.env.WHATSAPP_MESSAGE_TTL_DAYS);
-const LOG_TTL_MS =
-  Number.isFinite(TTL_DAYS) && TTL_DAYS > 0
-    ? TTL_DAYS * 24 * 60 * 60 * 1000
-    : MESSAGE_TTL_MS;
+// How long any stored log line lives (why one horizon, and why it is capped:
+// resolveTtlMs in lib/message-view.ts). Read here, not in the lib, so the lib
+// stays pure. TTL_NOTE is logged at startup rather than here - logDiag's own
+// dependencies are declared further down this file, so calling it from here
+// would hit their temporal dead zone.
+const { ms: LOG_TTL_MS, note: TTL_NOTE } = resolveTtlMs(
+  process.env.WHATSAPP_MESSAGE_TTL_DAYS,
+);
 // import.meta.dir is this file's own directory, not CWD, so it's correct
 // regardless of where the process was launched from.
 const WIZARD_CMD = wizardCmd(import.meta.dir);
@@ -1044,6 +1044,12 @@ async function becomePrimary(): Promise<void> {
   // Primary-only background work, started once on becoming primary and never
   // stopped: there is no primary → secondary transition to stop them for.
   if (!STATIC) setInterval(checkApprovals, 5000).unref();
+  // Say so HERE, not at startup: pruning is what the horizon governs, and this
+  // is the only place it is registered. A process that booted as a secondary
+  // reaches this line through the lock-retry promotion, so announcing it at
+  // startup would leave a promoted secondary pruning on a horizon it never
+  // mentioned. Empty when the variable was unset or taken as given.
+  if (TTL_NOTE) logDiag(`${LOG_PREFIX}: ${TTL_NOTE}\n`);
   setInterval(pruneMessageLog, 60 * 60 * 1000).unref();
   // A promoted secondary loaded sent.jsonl at ITS boot; the primary it is
   // replacing kept appending since. Re-read (pruneMessageLog -> pruneSentLog)
@@ -2335,6 +2341,18 @@ function markReplied(chat_id: string, onlyIds?: ReadonlySet<string>): void {
 // Re-reads the log every 2s while waiting, rather than being woken
 // in-process. Simpler, works whoever wrote the line, and costs at most 2s of
 // latency in a chat bridge. Wake on write if that ever matters.
+// KNOWN LIMITATION, deliberately left as-is for now (blocker
+// w01-wait-for-messages-freshness, task T11). R7's single horizon means an
+// unanswered inbound no longer ages out in 24h, so this returns instantly for
+// up to 30 days on a message nobody answers, and the tool's own advice is to
+// call it again straight away. The owner has decided it should wait for
+// messages that arrive AFTER the call. That change is NOT a patch here: it
+// needs a per-caller notion of "already seen", and handleToolCall carries no
+// caller identity on either entry point (direct, and the IPC relay at ~621
+// which has the socket but does not thread it through). Two simpler attempts
+// were made and both were wrong - see the blocker. Doing it properly means
+// touching the connection layer, which is a danger zone and not a thing to
+// rush.
 async function waitForUnreplied(maxMs: number): Promise<MessageLogEntry[]> {
   const deadline = Date.now() + maxMs;
   for (;;) {

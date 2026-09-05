@@ -1,11 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import {
   awaitingReply,
+  DAY_MS,
   keepLogLine,
+  MAX_TTL_DAYS,
+  MIN_TTL_DAYS,
+  MESSAGE_TTL_MS,
   NOT_ADDRESSED,
   recentBothSides,
   recentWindow,
   renderLogEntry,
+  resolveTtlMs,
   type ViewableEntry,
 } from "./message-view";
 
@@ -142,17 +147,33 @@ describe("recentBothSides", () => {
   });
 });
 
+// keepLogLine's parameter is `{ ts: string }` - it reads nothing else. These
+// tests deliberately pass the other fields a real log line carries, to prove
+// they are ignored now that the two-lifetime branch is gone. A bare object
+// literal cannot say that: TypeScript's excess-property check rejects a fresh
+// literal with extra keys (TS2353). This widens the literal at the call site
+// without widening the function's own contract.
+const logLine = (e: {
+  ts: string;
+  direction?: "in" | "out";
+  routed?: false;
+  replied?: boolean;
+  by?: "owner";
+}): { ts: string } => e;
+
 describe("keepLogLine", () => {
   test("ONE horizon: an unanswered inbound lives the same 7 days as everything else", () => {
     // Regression for #20. An unanswered inbound used to die at 24h, so the
     // message you had not got to yet was the first thing to vanish.
-    expect(keepLogLine({ ts: hoursAgo(25), direction: "in" }, now)).toBe(true);
-    expect(keepLogLine({ ts: hoursAgo(6 * 24), direction: "in" }, now)).toBe(
-      true,
-    );
-    expect(keepLogLine({ ts: hoursAgo(8 * 24), direction: "in" }, now)).toBe(
-      false,
-    );
+    expect(
+      keepLogLine(logLine({ ts: hoursAgo(25), direction: "in" }), now),
+    ).toBe(true);
+    expect(
+      keepLogLine(logLine({ ts: hoursAgo(6 * 24), direction: "in" }), now),
+    ).toBe(true);
+    expect(
+      keepLogLine(logLine({ ts: hoursAgo(8 * 24), direction: "in" }), now),
+    ).toBe(false);
   });
   test("every other kind of line keeps the same 7 days", () => {
     const sixDays = hoursAgo(6 * 24);
@@ -166,21 +187,29 @@ describe("keepLogLine", () => {
       expect(keepLogLine(entry, now)).toBe(true);
     }
     expect(
-      keepLogLine({ ts: eightDays, direction: "in", routed: false }, now),
+      keepLogLine(
+        logLine({ ts: eightDays, direction: "in", routed: false }),
+        now,
+      ),
     ).toBe(false);
     expect(
-      keepLogLine({ ts: eightDays, direction: "out", by: "owner" }, now),
+      keepLogLine(
+        logLine({ ts: eightDays, direction: "out", by: "owner" }),
+        now,
+      ),
     ).toBe(false);
   });
   test("a caller-supplied ttl wins over the default (WHATSAPP_MESSAGE_TTL_DAYS)", () => {
     const day = 24 * 60 * 60 * 1000;
     const tenDays = hoursAgo(10 * 24);
-    expect(keepLogLine({ ts: tenDays, direction: "in" }, now)).toBe(false);
-    expect(keepLogLine({ ts: tenDays, direction: "in" }, now, 14 * day)).toBe(
-      true,
+    expect(keepLogLine(logLine({ ts: tenDays, direction: "in" }), now)).toBe(
+      false,
     );
     expect(
-      keepLogLine({ ts: hoursAgo(2), direction: "in" }, now, 1 * day),
+      keepLogLine(logLine({ ts: tenDays, direction: "in" }), now, 14 * day),
+    ).toBe(true);
+    expect(
+      keepLogLine(logLine({ ts: hoursAgo(2), direction: "in" }), now, 1 * day),
     ).toBe(true);
   });
   test("an unparseable ts is dropped whatever the ttl", () => {
@@ -203,5 +232,82 @@ describe("recentWindow", () => {
     }
     // input array unmodified
     expect(entries).toEqual(input);
+  });
+});
+
+describe("resolveTtlMs", () => {
+  test("unset or blank keeps the 7-day default and says nothing", () => {
+    for (const raw of [undefined, "", "   "]) {
+      expect(resolveTtlMs(raw)).toEqual({ ms: MESSAGE_TTL_MS, note: "" });
+    }
+  });
+
+  test("a plain positive value is taken as given, with no diagnostic", () => {
+    expect(resolveTtlMs("14")).toEqual({ ms: 14 * DAY_MS, note: "" });
+  });
+
+  test("both boundaries are inclusive - 1 and 30 are accepted, not clamped", () => {
+    for (const d of [MIN_TTL_DAYS, MAX_TTL_DAYS]) {
+      expect(resolveTtlMs(String(d))).toEqual({ ms: d * DAY_MS, note: "" });
+    }
+  });
+
+  test("above the ceiling is clamped, and says so", () => {
+    // The disk guard is the point: pruneInbox shares this horizon, so an
+    // unbounded value would silently switch it off.
+    const r = resolveTtlMs("3650");
+    expect(r.ms).toBe(MAX_TTL_DAYS * DAY_MS);
+    expect(r.note).toContain("clamped");
+    expect(r.note).toContain("inbox/");
+  });
+
+  test("a SMALL POSITIVE value is clamped up, not taken as given", () => {
+    // The destructive end. The unit is days, but Number() accepts 0.01 - about
+    // fourteen minutes. Unclamped, the next hourly tick deletes every
+    // attachment in inbox/ older than that, including a photo whose path
+    // catch_up just handed the agent, and empties messages.jsonl with it.
+    // Rejecting <= 0 does not cover this; 0.01 looks like a real setting.
+    for (const raw of ["0.01", "0.5"]) {
+      const r = resolveTtlMs(raw);
+      expect(r.ms).toBe(MIN_TTL_DAYS * DAY_MS);
+      expect(r.note).toContain("clamped");
+    }
+  });
+
+  test("junk and non-positive values fall back rather than pruning the log away", () => {
+    // The dangerous failure is 0 or negative: it would make every line older
+    // than `now` expire immediately and empty the log on the first tick.
+    for (const raw of ["0", "-1", "abc", "NaN", "Infinity"]) {
+      const r = resolveTtlMs(raw);
+      expect(r.ms).toBe(MESSAGE_TTL_MS);
+      expect(r.note).toContain("ignored");
+    }
+  });
+
+  test("the resolved horizon is what keepLogLine actually enforces", () => {
+    const { ms } = resolveTtlMs("2");
+    const now = Date.parse("2026-09-05T00:00:00.000Z");
+    const age = (h: number) => ({
+      ts: new Date(now - h * 60 * 60 * 1000).toISOString(),
+    });
+    expect(keepLogLine(age(47), now, ms)).toBe(true);
+    expect(keepLogLine(age(49), now, ms)).toBe(false);
+  });
+});
+
+describe("resolveTtlMs diagnostic is log-safe", () => {
+  test("the raw value is quoted and truncated, so it cannot forge diag.log lines", () => {
+    // The note is written to diag.log as `${timestamp} ${line}` - a
+    // newline-delimited file read back as records. An unquoted value carrying
+    // a newline would inject an extra line that looks like a real record.
+    const r = resolveTtlMs("x\nwhatsapp channel: forged line");
+    expect(r.ms).toBe(MESSAGE_TTL_MS);
+    expect(r.note).not.toContain("\n");
+    expect(r.note).toContain("ignored");
+  });
+
+  test("a very long value cannot flood the log", () => {
+    const r = resolveTtlMs("9".repeat(5000));
+    expect(r.note.length).toBeLessThan(200);
   });
 });

@@ -66,6 +66,14 @@ LOCK_FILE="$STATE_DIR/.server.lock"
 
 # Thresholds — only nudge if things are really stuck
 MSG_STALE_SECS=600            # 10 min unreplied message
+# Ceiling on the same window. Past this an unreplied line means "nobody
+# answered", not "the session is stuck". Before 0.24.0 an unanswered inbound
+# aged out of the log after 24h, so Check 1 was self-limiting; with one 7-day
+# horizon (30 with WHATSAPP_MESSAGE_TTL_DAYS) a single message nobody ever
+# replies to would otherwise make the watchdog declare the session stuck and
+# fire recovery on every cycle for a week. Mirrors MSG_STALE_MAX_SECS in
+# scripts/doctor.ts.
+MSG_STALE_MAX_SECS=86400      # 24h; older than this is not a stuck session
 PENDING_STALE_MIN=15          # 15 min pending file untouched
 COOLDOWN_SECS=600             # don't nudge more than once per 10 min
 AUTH_ALERT_COOLDOWN_SECS=1800 # don't re-alert auth failure more than once per 30 min
@@ -404,7 +412,8 @@ try:
         m = json.loads(line)
         if m.get('replied') is False:
           ts = datetime.fromisoformat(m['ts'].replace('Z','+00:00')).timestamp()
-          if now - ts > $MSG_STALE_SECS:
+          age = now - ts
+          if $MSG_STALE_SECS < age < $MSG_STALE_MAX_SECS:
             stale += 1
       except Exception:
         continue
@@ -414,7 +423,7 @@ print(stale)
 " 2>/dev/null || echo 0)
 	if [ "$stale_count" -gt 0 ]; then
 		stuck=1
-		reason="$stale_count unreplied msg(s) >${MSG_STALE_SECS}s"
+		reason="$stale_count unreplied msg(s) ${MSG_STALE_SECS}-${MSG_STALE_MAX_SECS}s old"
 	fi
 fi
 
