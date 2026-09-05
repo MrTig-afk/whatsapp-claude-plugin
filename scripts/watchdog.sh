@@ -74,6 +74,12 @@ MSG_STALE_SECS=600            # 10 min unreplied message
 # fire recovery on every cycle for a week. Mirrors MSG_STALE_MAX_SECS in
 # scripts/doctor.ts.
 MSG_STALE_MAX_SECS=86400      # 24h; older than this is not a stuck session
+# Deliberately no INFO/report path for the >24h ones here, unlike doctor.ts,
+# which reports them separately so a long-dead session cannot hide behind a
+# PASS. The watchdog does not need it: a session dead that long is caught by
+# the one-way-silence checks below (INBOUND_STALE_SECS 6h -> alert,
+# INBOUND_RESTART_SECS 12h -> restart), both of which fire well before this
+# ceiling. Check 1 is the "stuck despite traffic" signal, not the liveness one.
 PENDING_STALE_MIN=15          # 15 min pending file untouched
 COOLDOWN_SECS=600             # don't nudge more than once per 10 min
 AUTH_ALERT_COOLDOWN_SECS=1800 # don't re-alert auth failure more than once per 30 min
@@ -479,7 +485,7 @@ echo "$streak" >"$STUCK_STREAK_FILE"
 # Nudge: ESC + catch-up prompt
 tmux send-keys -t "$TMUX_SESSION" Escape
 sleep 1
-tmux send-keys -t "$TMUX_SESSION" "Watchdog: call whatsapp catch_up tool to recover recent two-way context and open tasks, reply to any unreplied messages in-context, then process any files in ~/.whatsapp-channel/pending/ (execute each prompt, send to chat_id, then rm)." Enter
+tmux send-keys -t "$TMUX_SESSION" "Watchdog: call whatsapp catch_up with no arguments for the per-chat waiting counts and open tasks, then call catch_up again with chat set to each chat that has messages waiting - that view carries the chat_id and the message text you need to reply in-context. Then process any files in ~/.whatsapp-channel/pending/ (execute each prompt, send to chat_id, then rm)." Enter
 sleep 1
 tmux send-keys -t "$TMUX_SESSION" Enter
 

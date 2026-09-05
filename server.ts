@@ -62,6 +62,9 @@ import { logContainsId } from "./lib/message-log-probe";
 import { ownerStamp, parsePermissionReply } from "./lib/owner";
 import {
   awaitingReply,
+  type ChatCount,
+  chatDisplayName,
+  formatChatCounts,
   keepLogLine,
   RECENT_LIMIT,
   recentBothSides,
@@ -2677,7 +2680,7 @@ const mcp = new Server(
       "",
       'reply accepts file paths (files: ["/abs/path.png"]) for attachments. Use react to add emoji reactions. WhatsApp supports any emoji for reactions (no whitelist restriction).',
       "",
-      "On session start, call the status tool immediately to check connection state and show the pairing code if the device is not yet paired. Then call the catch_up tool: it returns the recent two-way conversation for every active chat, unreplied counts, and open tasks from tasks.md. Resume any open tasks and reply to unreplied messages. (The unreplied tool still exists if you only want the plain unreplied list.)",
+      "On session start, call the status tool immediately to check connection state and show the pairing code if the device is not yet paired. Then call the catch_up tool with NO arguments: it returns how many messages are waiting per chat (with an @ where a mention-gated group addressed you) and the open tasks from tasks.md - counts only, no message text and no chat_id. To read or answer one of them, call catch_up again with `chat` set to that name; that view carries the chat_id, which is what reply needs. Do NOT call unreplied to open a session - it returns the full text of everything outstanding, which is what counts-only exists to avoid; it is there for when you actually want that dump. Resume any open tasks.",
       "",
       "WhatsApp exposes no history or search API — you only see messages as they arrive. If you need earlier context, ask the user to paste it or summarize.",
       "",
@@ -2976,7 +2979,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () =>
           {
             name: "unreplied",
             description:
-              "Get messages received but not yet replied to. Call this on session start (after status) to catch up on messages that arrived before this session or were missed due to a restart. Each entry includes chat_id, message_id, user, text, and timestamp.",
+              "Get the FULL TEXT of every message received and not yet replied to, across all chats. Each entry includes chat_id, message_id, user, text, and timestamp. This is NOT the session-start tool - catch_up with no arguments is, and it deliberately shows counts only. Use this when you have been asked for the actual contents of everything outstanding, not to open a session.",
             inputSchema: {
               type: "object",
               properties: {
@@ -2991,7 +2994,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () =>
           {
             name: "catch_up",
             description:
-              'Recover conversation context. Pass `chat` (a chat_id, or part of a group or contact name, case-insensitive) to get ONE chat - do this before drafting a message to someone, so the room is in view without dumping every chat. Without `chat`: every chat. For every chat with a line still in the log (7 days by default, every line alike - WHATSAPP_MESSAGE_TTL_DAYS changes it), returns the recent messages in BOTH directions (sender name for incoming, "You" for a reply this agent sent, and the owner\'s own name for a message they typed on their phone), each chat\'s unreplied count, and the open (unchecked) items from ~/.whatsapp-channel/tasks.md. Call this on session start, right after status. When you take on a multi-step task from a chat, append a line to tasks.md ("- [ ] [YYYY-MM-DD HH:MM] [chat] task — progress note"), keep the progress note updated as you work, and flip it to "- [x]" when done, so a future session can resume it after a crash.',
+              'Recover conversation context. Pass `chat` (a chat_id, or part of a group or contact name, case-insensitive) to get ONE chat - do this before drafting a message to someone, so the room is in view without dumping every chat. Without `chat`: COUNTS ONLY - one line per chat that has something waiting, showing the chat name, a WhatsApp-style `@` when it is a mention-gated group (so a waiting message there is one that actually addressed you), and how many are unreplied. NO MESSAGE TEXT at all, and a chat with recent traffic but nothing unreplied is left out rather than listed as 0. Sorted most-unreplied first. Name a chat to read anything. Either way you also get the open (unchecked) items from ~/.whatsapp-channel/tasks.md. With `chat`: the recent messages in BOTH directions (sender name for incoming, the label You for a reply this agent sent, and the real name of the owner for a message they typed on their phone), for lines still in the log (7 days by default, every line alike - WHATSAPP_MESSAGE_TTL_DAYS changes it). Call this on session start, right after status. When you take on a multi-step task from a chat, append a line to tasks.md ("- [ ] [YYYY-MM-DD HH:MM] [chat] task — progress note"), keep the progress note updated as you work, and flip it to "- [x]" when done, so a future session can resume it after a crash.',
             inputSchema: {
               type: "object",
               properties: {
@@ -3387,14 +3390,33 @@ const handleToolCall = async (req: {
         const want = String(args.chat ?? "")
           .trim()
           .toLowerCase();
+        // Session start is COUNTS ONLY (owner, 2026-09-05). Message text
+        // appears in exactly one place - when a chat is named - so opening a
+        // session no longer reads every letter in the mailbox aloud.
+        const counts: ChatCount[] = [];
+        const access = want ? null : loadAccess();
         for (const [chatId, { entries, unreplied }] of byChat) {
-          const name =
-            entries.find((e) => e.group_name)?.group_name ??
-            entries.find((e) => (e.direction ?? "in") === "in")?.user ??
-            chatId;
+          const name = chatDisplayName(entries, chatId);
+          if (!want) {
+            // A listed chat always has unreplied > 0, and unreplied only ever
+            // counts ROUTED inbound lines, so in a mention-gated group a
+            // waiting message is by definition one that addressed us - which
+            // is exactly what the `@` claims.
+            counts.push({
+              name,
+              unreplied,
+              mentionGated:
+                chatId.endsWith("@g.us") &&
+                access?.groups[chatId]?.requireMention === true,
+            });
+            continue;
+          }
+          // Match the chat id as a SUBSTRING, not just exactly. The name no
+          // longer falls back to the raw chat id, so without this a lookup by
+          // the jid prefix from a <channel> notification - the handle a model
+          // most often actually has - stopped matching anything.
           if (
-            want &&
-            chatId.toLowerCase() !== want &&
+            !chatId.toLowerCase().startsWith(want) &&
             !name.toLowerCase().includes(want)
           )
             continue;
@@ -3408,11 +3430,20 @@ const handleToolCall = async (req: {
           });
           sections.push([header, ...lines].join("\n"));
         }
-        let text = sections.length
-          ? sections.join("\n\n")
-          : want
-            ? `No chat on record matching "${want}".`
-            : "No chat activity on record.";
+        const countsText = want ? "" : formatChatCounts(counts);
+        let text = want
+          ? sections.length
+            ? sections.join("\n\n")
+            : `No chat on record matching "${want}".`
+          : // "Nothing waiting" and "nothing on record at all" are different
+            // answers and only one of them is reassuring. An empty log means a
+            // fresh install - or a bridge silently receiving nothing, which is
+            // the one thing a session should be told rather than left to read
+            // as quiet.
+            countsText ||
+            (byChat.size === 0
+              ? "No chat activity on record."
+              : "Nothing waiting.");
         try {
           if (existsSync(TASKS_FILE)) {
             const open = readFileSync(TASKS_FILE, "utf8")
@@ -3544,13 +3575,23 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const result = await handleToolCall(req);
   const pending = getUnreplied().length;
   const last = result.content?.[result.content.length - 1];
-  // Not on the tools that just returned those very messages.
+  // Not on the tools that just returned those very messages. The counts-only
+  // catch_up is one of them - it reports exactly this number, so appending a
+  // directive to go call the full-text tool defeated the quiet list entirely.
+  // Naming a chat is NOT excluded: there `pending` is the global figure, and a
+  // session working chat-by-chat still wants telling about the others.
+  const countsOnlyCatchUp =
+    req.params.name === "catch_up" &&
+    !String(
+      (req.params.arguments as Record<string, unknown> | undefined)?.chat ?? "",
+    ).trim();
   if (
     pending > 0 &&
     last?.type === "text" &&
-    !["unreplied", "wait_for_messages"].includes(req.params.name)
+    !["unreplied", "wait_for_messages"].includes(req.params.name) &&
+    !countsOnlyCatchUp
   ) {
-    last.text += `\n\n[${pending} unreplied WhatsApp message(s) waiting — call unreplied or wait_for_messages]`;
+    last.text += `\n\n[${pending} unreplied WhatsApp message(s) waiting — call catch_up for the per-chat counts]`;
   }
   return result;
 });
@@ -4059,7 +4100,9 @@ async function handleMessage(msg: WAMessage, backlog = false): Promise<void> {
           replied: true,
           direction: "in",
           routed: false,
-          ...(groupName ? { group_name: groupName } : {}),
+          ...(groupName && groupName !== remoteJid
+            ? { group_name: groupName }
+            : {}),
         });
       }
     }
@@ -4252,7 +4295,7 @@ async function handleMessage(msg: WAMessage, backlog = false): Promise<void> {
     direction: "in",
     ...(imagePath ? { image_path: imagePath } : {}),
     ...(attachment ? { attachment_kind: attachment.kind } : {}),
-    ...(groupName ? { group_name: groupName } : {}),
+    ...(groupName && groupName !== remoteJid ? { group_name: groupName } : {}),
   });
 
   // A backlog line is logged (above) and shows in catch_up/unreplied; it is

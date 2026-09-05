@@ -1,5 +1,7 @@
 // Pure render/retention rules for stored log lines (no I/O); split out of
 // server.ts so they are testable without its connect-on-import side effects.
+import { groupAnchor, looksLikeNumber, maskNumber } from "../scripts/mask";
+
 export type ViewableEntry = {
   user: string;
   text: string;
@@ -67,7 +69,10 @@ export function resolveTtlMs(raw: string | undefined): {
   // value containing a newline would otherwise forge extra log lines. Same
   // standard as maskJid/neutralizeChannelTag elsewhere; owner-controlled
   // input, but this file does not make exceptions for that.
-  const shown = JSON.stringify(raw).slice(0, 40);
+  // Truncate FIRST, then quote. Quoting first and slicing after would cut the
+  // closing quote off a long value and emit an unterminated string into the
+  // very records file the quoting exists to keep parseable.
+  const shown = JSON.stringify(raw.slice(0, 38));
   const days = Number(raw);
   if (!Number.isFinite(days) || days <= 0)
     return {
@@ -95,6 +100,101 @@ export function keepLogLine(
 
 /** Suffix on the sender of an entry that was never addressed to the agent. */
 export const NOT_ADDRESSED = " (not addressed to Claude)";
+
+/** The name a chat is shown under, anywhere. Order matters and each step is
+ *  there for a reason:
+ *
+ *  1. A group's own subject - the first one in the window that is not just the
+ *     chat id wearing a subject's clothing. resolveGroupName falls back to the
+ *     raw jid when the metadata lookup times out or its failure cooldown is
+ *     active, and lines persisted during that window carry it as `group_name`.
+ *     For a legacy `<creator-number>-<timestamp>@g.us` group that is the
+ *     creator's full phone number. Falling through to step 3 puts it through
+ *     groupAnchor instead. The persist paths are guarded too, but only from now
+ *     on - this covers what is already on disk. Deliberately NOT also filtered
+ *     by looksLikeNumber: that rejects any run of six digits, so real subjects
+ *     like "Sprint 2026-09-05" would lose their name, and the only bad value
+ *     resolveGroupName can produce is the chat id, which is already excluded.
+ *  2. For a DM ONLY, the name of someone who wrote in the chat - and only if it
+ *     does not look like a phone number. `user` is displaySenderName's output,
+ *     and that falls back to the jid's user part when the sender has no
+ *     WhatsApp profile name, so an unsaved contact would otherwise be printed
+ *     as a full raw number.
+ *
+ *     A GROUP never takes this step. Labelling a group with whichever member
+ *     happens to be first in the window makes it indistinguishable from a DM
+ *     with that person, and the label then CHANGES between sessions as the
+ *     window slides to a different speaker. That is not hypothetical: when a
+ *     metadata lookup times out its cooldown is five minutes, so a whole run of
+ *     messages carries no subject at all.
+ *  3. A masked form of the chat id. groupAnchor leaves a modern
+ *     `120363...@g.us` intact and masks only the phone segment of a legacy
+ *     one; maskNumber keeps the last four digits of a DM.
+ *
+ *  There is no fourth step and no branch that returns a bare number. */
+export function chatDisplayName(
+  entries: { group_name?: string; direction?: "in" | "out"; user?: string }[],
+  chatId: string,
+): string {
+  // First USABLE subject, not merely the first. A group whose metadata
+  // lookup timed out on the oldest line in the window but succeeded later
+  // has its real name sitting in a later entry.
+  const group = entries.find(
+    (e) => e.group_name && e.group_name !== chatId,
+  )?.group_name;
+  if (group) return group;
+  if (chatId.endsWith("@g.us")) return groupAnchor(chatId);
+  const sender = entries.find((e) => (e.direction ?? "in") === "in")?.user;
+  if (sender && !looksLikeNumber(sender)) return sender;
+  return maskNumber(chatId);
+}
+
+export type ChatCount = {
+  name: string;
+  unreplied: number;
+  /** Whether to mark this chat with a WhatsApp-style `@`. TRUE ONLY FOR A
+   *  MENTION-GATED GROUP (owner, 2026-09-05). In an ungated group every
+   *  message routes to us, so an always-on `@` would be technically true and
+   *  carry no information at all - the marker is worth having precisely
+   *  because it is selective. Never set for a DM. */
+  mentionGated: boolean;
+};
+
+/** Session start: how many are waiting, per chat, and nothing else. No message
+ *  text appears here at all - that is what naming one chat is for. A chat with
+ *  recent traffic but nothing unreplied is omitted entirely rather than listed
+ *  as 0, so the list is only ever things that want the owner.
+ *
+ *  Sorted most-unreplied first, then alphabetically, so the loudest room is at
+ *  the top and the order is stable between sessions.
+ *
+ *  Returns "" when nothing is waiting; the caller decides what to say instead,
+ *  because it also knows whether there are open tasks to show.
+ *
+ *  ponytail: aligns on `name.length`, i.e. UTF-16 code units, so a chat name
+ *  with emoji or CJK drifts by a column or two. displayWidth() in
+ *  scripts/picker.ts does this properly, but importing it here would drag a
+ *  raw-mode TUI into a pure module. Move displayWidth into lib/ and use it if
+ *  the misalignment ever actually bothers anyone. */
+export function formatChatCounts(chats: ChatCount[]): string {
+  const listed = chats
+    .filter((c) => c.unreplied > 0)
+    .sort((a, b) => b.unreplied - a.unreplied || a.name.localeCompare(b.name));
+  if (listed.length === 0) return "";
+  const width = Math.max(...listed.map((c) => c.name.length));
+  return listed
+    .map(
+      (c) =>
+        // The marker is GLUED to the count ("@12", not "@  12"). Chat names
+        // are peer-controlled and safeName does not strip "@", so a group
+        // innocently called "Standup @ 9" would otherwise carry an @ in a
+        // column no reader can tell from the marker. Adjacent to the trailing
+        // number it is unambiguous: the marker is the character immediately
+        // before the count, and nothing else on the line can be.
+        `${c.name.padEnd(width)}   ${c.mentionGated ? "@" : " "}${c.unreplied}`,
+    )
+    .join("\n");
+}
 
 /** How many messages per chat catch_up replays. */
 export const RECENT_LIMIT = 5;

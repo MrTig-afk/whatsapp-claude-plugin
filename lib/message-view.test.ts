@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   awaitingReply,
+  type ChatCount,
+  chatDisplayName,
   DAY_MS,
+  formatChatCounts,
   keepLogLine,
   MAX_TTL_DAYS,
   MIN_TTL_DAYS,
@@ -306,8 +309,240 @@ describe("resolveTtlMs diagnostic is log-safe", () => {
     expect(r.note).toContain("ignored");
   });
 
-  test("a very long value cannot flood the log", () => {
+  test("a very long value cannot flood the log, and stays a parseable string", () => {
     const r = resolveTtlMs("9".repeat(5000));
     expect(r.note.length).toBeLessThan(200);
+    // Truncating a quoted string would drop its closing quote and emit an
+    // unterminated value into the records file the quoting exists to protect.
+    const start = r.note.indexOf('"');
+    const end = r.note.indexOf('"', start + 1);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(() => JSON.parse(r.note.slice(start, end + 1))).not.toThrow();
+  });
+});
+
+describe("formatChatCounts", () => {
+  const chat = (over: Partial<ChatCount> = {}): ChatCount => ({
+    name: "Soham",
+    unreplied: 1,
+    mentionGated: false,
+    ...over,
+  });
+
+  test("no message text appears anywhere - the whole point of the change", () => {
+    const out = formatChatCounts([
+      chat({ name: "Soham", unreplied: 3 }),
+      chat({ name: "HUDINI", unreplied: 12, mentionGated: true }),
+    ]);
+    // The per-line shape assertion below is the real check, and it is a
+    // stronger claim than "contains no colon" - which would also fail on a
+    // chat legitimately named "Re: standup".
+    for (const line of out.split("\n")) {
+      expect(line).toMatch(/^\S.*\s\s\s[@ ]\d+$/);
+    }
+  });
+
+  test("most unreplied first, then alphabetical", () => {
+    const out = formatChatCounts([
+      chat({ name: "Mum", unreplied: 1 }),
+      chat({ name: "Zara", unreplied: 5 }),
+      chat({ name: "Adi", unreplied: 5 }),
+      chat({ name: "Soham", unreplied: 3 }),
+    ]);
+    expect(out.split("\n").map((l) => l.trim().split(/\s+/)[0])).toEqual([
+      "Adi",
+      "Zara",
+      "Soham",
+      "Mum",
+    ]);
+  });
+
+  test("@ marks a mention-gated group and NOTHING else", () => {
+    // Q2, owner 2026-09-05. An ungated group routes everything, so an @ there
+    // would be true and useless.
+    const out = formatChatCounts([
+      chat({ name: "Gated", unreplied: 2, mentionGated: true }),
+      chat({ name: "Ungated", unreplied: 2, mentionGated: false }),
+      chat({ name: "ADm", unreplied: 2, mentionGated: false }),
+    ]);
+    const lines = out.split("\n");
+    expect(lines.filter((l) => l.includes("@"))).toHaveLength(1);
+    expect(lines.find((l) => l.startsWith("Gated"))).toContain("@");
+    expect(lines.find((l) => l.startsWith("Ungated"))).not.toContain("@");
+  });
+
+  test("a chat with nothing unreplied is omitted, not listed as 0", () => {
+    const out = formatChatCounts([
+      chat({ name: "Quiet", unreplied: 0 }),
+      chat({ name: "Loud", unreplied: 4 }),
+    ]);
+    expect(out).not.toContain("Quiet");
+    // Assert the ROW is gone, not that the digit 0 is absent - a count of 10,
+    // or a chat named "Room 101", would fail that spuriously.
+    expect(out).not.toMatch(/^\s*Quiet/m);
+    expect(out.split("\n")).toHaveLength(1);
+  });
+
+  test("nothing waiting at all returns empty, so the caller can speak for itself", () => {
+    expect(formatChatCounts([])).toBe("");
+    expect(formatChatCounts([chat({ unreplied: 0 })])).toBe("");
+  });
+
+  test("names are column-aligned so the counts line up", () => {
+    const out = formatChatCounts([
+      chat({ name: "A", unreplied: 2 }),
+      chat({ name: "LongerName", unreplied: 1 }),
+    ]);
+    const at = out.split("\n").map((l) => l.lastIndexOf(" ") + 1);
+    expect(new Set(at).size).toBe(1);
+  });
+});
+
+describe("chatDisplayName", () => {
+  test("a group subject wins", () => {
+    expect(
+      chatDisplayName(
+        [{ group_name: "WIL Group HUDINI", user: "Ravi", direction: "in" }],
+        "120363427665348138@g.us",
+      ),
+    ).toBe("WIL Group HUDINI");
+  });
+
+  test("a real sender name is used when there is no group subject", () => {
+    expect(
+      chatDisplayName(
+        [{ user: "Soham", direction: "in" }],
+        "9198@s.whatsapp.net",
+      ),
+    ).toBe("Soham");
+  });
+
+  test("a NUMBER-SHAPED sender name is refused and masked instead", () => {
+    // displaySenderName falls back to the jid's user part when the sender has
+    // no WhatsApp profile name, so `user` can be a full phone number. Printing
+    // it at session start would put a raw number on screen - the one thing
+    // every tool here is supposed to prevent.
+    const out = chatDisplayName(
+      [{ user: "919876543210", direction: "in" }],
+      "919876543210@s.whatsapp.net",
+    );
+    expect(out).not.toContain("919876543210");
+    expect(out).toContain("•");
+    expect(out).toContain("3210");
+  });
+
+  test("outbound-only entries never supply the name", () => {
+    // "You" or the owner's own name must not become the chat's label.
+    const out = chatDisplayName(
+      [{ user: "You", direction: "out" }],
+      "919876543210@s.whatsapp.net",
+    );
+    expect(out).not.toBe("You");
+    expect(out).toContain("•");
+  });
+
+  test("a modern group id survives intact; nothing personal in it", () => {
+    expect(chatDisplayName([], "120363427665348138@g.us")).toBe(
+      "120363427665348138@g.us",
+    );
+  });
+
+  test("a LEGACY group id has its creator's number masked", () => {
+    const out = chatDisplayName([], "919876543210-1600000000@g.us");
+    expect(out).not.toContain("919876543210");
+    expect(out).toContain("1600000000");
+  });
+});
+
+describe("chatDisplayName refuses a group_name that is really the chat id", () => {
+  test("a legacy group jid stored as group_name does not print the creator's number", () => {
+    // resolveGroupName falls back to the raw jid when the metadata lookup
+    // times out, and lines persisted in that window carry it as group_name.
+    const jid = "919876543210-1600000000@g.us";
+    const out = chatDisplayName([{ group_name: jid, direction: "in" }], jid);
+    expect(out).not.toContain("919876543210");
+    expect(out).toContain("1600000000");
+  });
+
+  test("a real subject full of digits is KEPT, not mistaken for a number", () => {
+    // looksLikeNumber matches any run of six digits, so "Sprint 2026-09-05"
+    // would be rejected and the group silently listed under a member's name.
+    // The only bad value resolveGroupName can produce is the chat id itself,
+    // and that is excluded by identity, so no digit heuristic is needed here.
+    const jid = "120363427665348138@g.us";
+    for (const subject of ["Sprint 2026-09-05", "Batch 2019-2023"]) {
+      expect(
+        chatDisplayName([{ group_name: subject, direction: "in" }], jid),
+      ).toBe(subject);
+    }
+  });
+
+  test("the first USABLE subject wins, not merely the first present", () => {
+    // The oldest line in the window can carry the raw jid from a timed-out
+    // metadata lookup while a later line has the real subject.
+    const jid = "120363427665348138@g.us";
+    const out = chatDisplayName(
+      [
+        { group_name: jid, direction: "in" },
+        { group_name: "WIL Group HUDINI", direction: "in" },
+      ],
+      jid,
+    );
+    expect(out).toBe("WIL Group HUDINI");
+  });
+
+  test("a real subject is still used", () => {
+    expect(
+      chatDisplayName(
+        [{ group_name: "WIL Group HUDINI", direction: "in" }],
+        "120363427665348138@g.us",
+      ),
+    ).toBe("WIL Group HUDINI");
+  });
+});
+
+describe("formatChatCounts marker cannot be confused with an @ in a name", () => {
+  test("an ungated chat whose NAME contains @ is not read as gated", () => {
+    // Group subjects and pushNames are peer-controlled and safeName does not
+    // strip "@". The marker is the character immediately before the count.
+    const out = formatChatCounts([
+      { name: "Standup @ 9", unreplied: 2, mentionGated: false },
+      { name: "HUDINI", unreplied: 1, mentionGated: true },
+    ]);
+    const gatedRows = out
+      .split("\n")
+      .filter((l) => /@\d+$/.test(l))
+      .map((l) => l.trim().split(/\s{2,}/)[0]);
+    expect(gatedRows).toEqual(["HUDINI"]);
+    // and the innocent name keeps its @ intact rather than being mangled
+    expect(out).toContain("Standup @ 9");
+  });
+});
+
+describe("chatDisplayName never labels a group with a member's name", () => {
+  test("a group with no resolvable subject falls through to the anchor", () => {
+    // Labelling it "Ravi" makes it indistinguishable from the DM with Ravi,
+    // and the label would change between sessions as the window slides.
+    const jid = "120363427665348138@g.us";
+    expect(chatDisplayName([{ user: "Ravi", direction: "in" }], jid)).toBe(jid);
+  });
+
+  test("a legacy group with no subject masks the creator's number", () => {
+    const out = chatDisplayName(
+      [{ user: "Ravi", direction: "in" }],
+      "919876543210-1600000000@g.us",
+    );
+    expect(out).not.toBe("Ravi");
+    expect(out).not.toContain("919876543210");
+  });
+
+  test("a DM still uses the sender name", () => {
+    expect(
+      chatDisplayName(
+        [{ user: "Soham", direction: "in" }],
+        "9198@s.whatsapp.net",
+      ),
+    ).toBe("Soham");
   });
 });
