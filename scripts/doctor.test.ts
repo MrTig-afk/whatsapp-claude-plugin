@@ -1,10 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import {
   closeSync,
   mkdirSync,
   mkdtempSync,
   openSync,
+  rmSync,
   truncateSync,
   writeFileSync,
 } from "node:fs";
@@ -29,8 +30,28 @@ function runDoctor(stateDir: string): string {
   });
 }
 
+// Every fixture dir this file creates, removed at the end of the run. Without
+// this each run leaks ~28 directories into the system temp dir, and the
+// disk-usage boundary tests below allocate ~500 MB each - sparse, but real
+// once the filesystem materialises them. Left unswept it accumulated 35 GB
+// across 981 directories and eventually filled the volume, at which point the
+// two disk-usage tests fail with ENOSPC and look like a code regression.
+const fixtures: string[] = [];
+
+afterAll(() => {
+  for (const dir of fixtures) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // A fixture we cannot remove is litter, not a test failure.
+    }
+  }
+});
+
 function freshStateDir(): string {
-  return mkdtempSync(join(tmpdir(), "doctor-fixture-"));
+  const dir = mkdtempSync(join(tmpdir(), "doctor-fixture-"));
+  fixtures.push(dir);
+  return dir;
 }
 
 // lstart of a live pid, exactly as doctor computes it

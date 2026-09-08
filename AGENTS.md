@@ -12,18 +12,46 @@ claude.com/plugins.
 
 ## Tech Stack & Commands
 
-- **Runtime:** Bun — TypeScript runs directly. No build step. No test suite.
-- **Deps (only 2 — no new dependencies without the user's explicit approval):**
-  `@modelcontextprotocol/sdk`, `@whiskeysockets/baileys@7.0.0-rc.9`
+- **Runtime:** Bun — TypeScript runs directly. No build step.
+- **Deps (only 3 — no new dependencies without the user's explicit approval):**
+  `@modelcontextprotocol/sdk`, `@whiskeysockets/baileys@7.0.0-rc.9`,
+  `@inquirer/prompts`
   (4 known rc.9 bugs are patched by `patch-baileys.mjs` via postinstall).
+- **Tests:** there IS a test suite — 22 `*.test.ts` files under `lib/` and
+  `scripts/`, run with `bun test`. There is no `test` script in `package.json`;
+  `bun test` finds them itself.
 - **Linting:** Trunk (prettier, markdownlint, shellcheck, shfmt, checkov, trufflehog).
+  Trunk is not installed on every machine — check before assuming `trunk check` runs.
 
 ```bash
 bun install     # install deps (postinstall runs patch-baileys.mjs)
 bun server.ts   # run the MCP server
+bun test        # ~130s, spawns real servers — see the warning below
 trunk check     # lint
 trunk fmt       # format
 ```
+
+**Type checking — `bun build` is NOT a type check.** `bun build` is a bundler: it
+resolves and emits, it does not check types, so an out-of-scope or misspelled
+identifier bundles happily and tells you nothing. Use `tsc` directly. This repo
+has no `tsconfig.json` and no local `typescript` dependency, so pass the options
+on the command line (verified 2026-09-08: exit 0, no errors):
+
+```bash
+bunx --bun typescript@5 --noEmit --skipLibCheck \
+  --target esnext --module preserve --moduleResolution bundler \
+  --strict server.ts
+```
+
+`--strict` is load-bearing, not decoration: without it you get two phantom
+TS2339s in `lib/mentions.ts` that do not exist under strict mode. Note the
+invocation is `bunx typescript@5 <options>` — `bunx typescript@5 tsc ...` fails,
+because bunx already resolves the package's `tsc` binary and the extra `tsc`
+is then read as a filename to compile.
+
+**Never run `bun test` concurrently with another `bun test` or with a forked
+review agent.** The IPC tests spawn real servers and contend on the singleton
+lock. Run it to a log and grep the summary — piping to `tail` hides failures.
 
 ## Architecture
 
