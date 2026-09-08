@@ -324,12 +324,20 @@ export function resolveChat(
       c.chatId.toLowerCase().startsWith(want) ||
       maskedOf(c.chatId) === want,
   );
-  // An exact handle wins outright - the full jid, or the masked form the
-  // ambiguity list actually showed.
-  const exact = hits.find(
-    (c) => c.chatId.toLowerCase() === want || maskedOf(c.chatId) === want,
-  );
-  if (exact) return { ok: true, chat: exact };
+  // A full jid wins outright: it is unique, so a caller who passed one has
+  // already been unambiguous.
+  const exactJid = hits.find((c) => c.chatId.toLowerCase() === want);
+  if (exactJid) return { ok: true, chat: exactJid };
+  // A MASKED HANDLE IS NOT UNIQUE, so it only wins when exactly one chat
+  // produces it. maskNumber keeps the last FOUR digits, and nameMatches says
+  // so two functions up: "two contacts sharing those digits still collide -
+  // that is the ambiguity rule". Taking the first hit bypassed that rule at
+  // the one point it was meant to apply, and the cost is the whole reason
+  // this file resolves chats at all: catch_up would render Alice's messages
+  // under Alice's chat_id, and the reply meant for Bob goes to her. Falling
+  // through re-asks instead, and the rows still differ by name.
+  const maskedHits = hits.filter((c) => maskedOf(c.chatId) === want);
+  if (maskedHits.length === 1) return { ok: true, chat: maskedHits[0] };
   if (hits.length === 1) return { ok: true, chat: hits[0] };
   return { ok: false, matches: hits };
 }

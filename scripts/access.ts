@@ -1060,13 +1060,24 @@ function set(key: string, rawValue: string): void {
     die("replyToMode must be off, first or all.");
   } else if (key === "chunkMode" && !["length", "newline"].includes(rawValue)) {
     die("chunkMode must be length or newline.");
-  } else if (key === "owner" && !rawValue.includes("@")) {
-    // A jid, not a bare number: this is the send target for every permission
-    // request, and a value WhatsApp cannot address silently sends approvals
-    // nowhere at all.
-    die(
-      "owner must be a JID, e.g. 886912345678@s.whatsapp.net.\nRun status to see the current one.",
-    );
+  } else if (key === "owner") {
+    // This is the chat that receives every permission request, up to 500 raw
+    // characters of the command being approved, so a mistyped digit - still a
+    // valid-looking jid - sent those previews to a stranger indefinitely.
+    // ALLOWLIST MEMBERSHIP, not jid shape, is the real rule: claimPermission
+    // binds the answer to this chat and gate() drops a reply from anyone not
+    // allowlisted, so an owner outside allowFrom could never approve anything
+    // in the first place.
+    const lidMap = loadLidMap();
+    const wanted = contactKeyFor(lidMap, rawValue);
+    const allowed =
+      rawValue.includes("@") &&
+      a.allowFrom.some((j) => contactKeyFor(lidMap, j) === wanted);
+    if (!allowed) {
+      die(
+        "owner must be the JID of an allowlisted contact, e.g. 886912345678@s.whatsapp.net.\nRun status to see the current owner and the allowlist; allow them first if they are not on it.",
+      );
+    }
   }
   a[key] = value;
   save(a);

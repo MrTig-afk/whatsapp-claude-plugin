@@ -1294,4 +1294,28 @@ describe("the masked handle the ambiguity list prints is accepted back", () => {
       "61400001111",
     );
   });
+
+  test("two DMs sharing a last-four re-ask instead of picking the first", () => {
+    // The mask keeps four digits, so it is not unique - nameMatches' own
+    // comment says two contacts sharing them still collide. Accepting the
+    // first hit resolved `•••••0123` to Alice while Bob was meant, and
+    // catch_up then hands out Alice's chat_id for Bob's reply.
+    const alice = { chatId: "447700900123@s.whatsapp.net", name: "Alice" };
+    const bob = { chatId: "447900900123@s.whatsapp.net", name: "Bob" };
+    const shared = maskNumber(alice.chatId).toLowerCase();
+    expect(maskNumber(bob.chatId).toLowerCase()).toBe(shared); // the premise
+
+    const r = resolveChat([alice, bob], shared);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.matches).toEqual([alice, bob]);
+
+    // Still reachable: the rows differ by name, which is what the message
+    // tells the caller to narrow by.
+    expect(resolveChat([alice, bob], "bob")).toEqual({ ok: true, chat: bob });
+    // And a last-four nobody else shares still resolves on the mask alone.
+    const solo = { chatId: "447700900999@s.whatsapp.net", name: "Cara" };
+    expect(
+      resolveChat([alice, solo], maskNumber(solo.chatId).toLowerCase()),
+    ).toEqual({ ok: true, chat: solo });
+  });
 });

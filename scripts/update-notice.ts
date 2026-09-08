@@ -59,6 +59,7 @@ if (!isStaticMode()) {
     {
       version: "0.24.0",
       notes: [
+        "If you copied the permissions block from USAGE.md, copy it again - including if you already re-copied it after the 0.23.0 note. That note said the old tool ids matched nothing and told you to replace the block; the block it pointed at was still wrong, so every reply and reaction has gone on asking for confirmation. The ids in USAGE.md are correct now.",
         "Replies you typed on your phone no longer fade after an hour - both halves of a chat now read in full.",
         "An unanswered message no longer expires a day before everything else. Every line now lives 7 days; set WHATSAPP_MESSAGE_TTL_DAYS to any value from 1 to 30 to change it.",
         "Session start no longer reads out every chat. catch_up with no arguments now says how many messages are waiting per chat, with an @ where a mention-gated group addressed you; ask for one chat by name to read it.",

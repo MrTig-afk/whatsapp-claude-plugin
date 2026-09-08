@@ -2381,9 +2381,20 @@ async function waitForUnreplied(maxMs: number): Promise<MessageLogEntry[]> {
   }
 }
 
+/** CAPPED, for the same reason catch_up is. Until this branch an unanswered
+ *  line aged out after 24h, so `unreplied` was self-limiting; the horizon is
+ *  now 7 days, or up to 30 via WHATSAPP_MESSAGE_TTL_DAYS. An owner away a
+ *  fortnight with a busy ungated group therefore had every waiting line
+ *  rendered into a single tool result - and wait_for_messages returns the
+ *  moment anything is unreplied (T11), so a polling session re-rendered that
+ *  whole backlog on every call. Both readers route through here, so the cap
+ *  lives here rather than at two call sites. NEWEST kept, oldest dropped, the
+ *  way catch_up's window does it; the callers' "N unreplied message(s)" count
+ *  is the true total either way. */
 function formatMessages(entries: MessageLogEntry[]): string {
   const owner = ownerDisplayName();
-  return entries
+  const hidden = Math.max(0, entries.length - MAX_CATCH_UP_LIMIT);
+  const body = (hidden ? entries.slice(-MAX_CATCH_UP_LIMIT) : entries)
     .map((m) => {
       const view = renderLogEntry(m, owner);
       const parts = [`[${m.ts}] ${view.who} in ${m.group_name ?? m.chat_id}:`];
@@ -2394,6 +2405,8 @@ function formatMessages(entries: MessageLogEntry[]): string {
       return parts.join("\n");
     })
     .join("\n\n");
+  if (!hidden) return body;
+  return `(showing the newest ${MAX_CATCH_UP_LIMIT}; ${hidden} older waiting message(s) not shown - name one chat with catch_up, or filter unreplied with chat_id, to reach them)\n\n${body}`;
 }
 
 function getUnreplied(): MessageLogEntry[] {
@@ -2425,7 +2438,9 @@ function getUnreplied(): MessageLogEntry[] {
  *  is the other end, so a caller cannot ask one tool result to carry an entire
  *  30-day log. Waiting lines are NOT exempt from it: they take the inbound
  *  slots first, but the window is still `limit` per side. The header reports
- *  any that did not fit. */
+ *  any that did not fit. formatMessages bounds `unreplied` and
+ *  `wait_for_messages` by the same number for the same reason - one ceiling,
+ *  not one per reader. */
 const MAX_CATCH_UP_LIMIT = 100;
 
 /** Per chat: every line still awaiting a reply, plus ~`limit` of recent
