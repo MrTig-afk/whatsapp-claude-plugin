@@ -66,7 +66,7 @@ if (!isStaticMode()) {
         "Replies you typed on your phone no longer fade after an hour - both halves of a chat read in full.",
         "An unanswered message no longer expires a day before everything else. Every line now lives 7 days.",
         "Set WHATSAPP_MESSAGE_TTL_DAYS to any value from 1 to 30 to change that. It bounds inbox/ too.",
-        "A photo or voice note with no caption now shows as [photo] or [voice] instead of an empty line.",
+        "A photo or voice note with no caption now reads as [photo] or [voice], not a raw (image) marker.",
         "When two contacts' numbers end in the same four digits, catch_up asks which one you meant.",
         "It used to pick whichever came first, so a reply could go to the wrong person.",
         "`access set owner` now only accepts a contact you have allowlisted.",

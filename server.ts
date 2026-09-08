@@ -2403,7 +2403,9 @@ async function waitForUnreplied(maxMs: number): Promise<MessageLogEntry[]> {
 function formatMessages(entries: MessageLogEntry[]): string {
   const owner = ownerDisplayName();
   const hidden = Math.max(0, entries.length - MAX_CATCH_UP_LIMIT);
-  const body = (hidden ? [...entries].sort(byTs).slice(-MAX_CATCH_UP_LIMIT) : entries)
+  const body = (
+    hidden ? [...entries].sort(byTs).slice(-MAX_CATCH_UP_LIMIT) : entries
+  )
     .map((m) => {
       const view = renderLogEntry(m, owner);
       const parts = [`[${m.ts}] ${view.who} in ${m.group_name ?? m.chat_id}:`];

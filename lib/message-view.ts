@@ -388,7 +388,7 @@ export function ambiguousChatMessage(want: string, matches: ChatRef[]): string {
   // already appears, so that is where the caller is sent.
   const indistinguishable =
     rowList.length !== new Set(rowList).size
-      ? "\n  Two of these render identically and no argument here can separate them - call unreplied, take the full chat_id it prints, and pass that as `chat`."
+      ? "\n  Two of these render identically and no argument here can separate them. Ask the user whose number it is and pass the full jid as `chat` (<countrycode+number>@s.whatsapp.net), which is unique and accepted verbatim. unreplied prints the full chat_id too, but ONLY for a chat with something waiting - a quiet one will not be there."
       : "";
   // ASK, do not guess. A group id above is callable as-is; a DM's is masked, so
   // the way through is the owner saying which - "the group" or "the person" -
@@ -428,7 +428,20 @@ export function formatChatCounts(chats: ChatCount[]): string {
     .filter((c) => c.unreplied > 0)
     .sort((a, b) => b.unreplied - a.unreplied || a.name.localeCompare(b.name));
   if (listed.length === 0) return "";
-  const width = Math.max(...listed.map((c) => c.name.length));
+  // BOUNDED, because a group subject is peer-controlled and unbounded. safeName
+  // substitutes characters and oneLine collapses whitespace; neither clips, and
+  // ranking.ts's clip() is only wired to wizard labels. So one admin setting a
+  // 500-character subject padded EVERY row of this list to 500 columns - the
+  // one view a session is told to read at start-up, and the same abuse surface
+  // the row-forging guards next to it already defend. The name itself is
+  // clipped too, or the long row survives the cap it is meant to be under.
+  const NAME_WIDTH = 32;
+  const clipName = (n: string) =>
+    n.length > NAME_WIDTH ? n.slice(0, NAME_WIDTH - 1) + "…" : n;
+  const width = Math.min(
+    NAME_WIDTH,
+    Math.max(...listed.map((c) => c.name.length)),
+  );
   return listed
     .map(
       (c) =>
@@ -438,7 +451,7 @@ export function formatChatCounts(chats: ChatCount[]): string {
         // column no reader can tell from the marker. Adjacent to the trailing
         // number it is unambiguous: the marker is the character immediately
         // before the count, and nothing else on the line can be.
-        `${c.name.padEnd(width)}   ${c.mentionGated ? "@" : " "}${c.unreplied}`,
+        `${clipName(c.name).padEnd(width)}   ${c.mentionGated ? "@" : " "}${c.unreplied}`,
     )
     .join("\n");
 }
@@ -632,11 +645,11 @@ export function catchUpWindow<
   return [...waiting, ...chatter, ...outbound].sort(byTs);
 }
 
-/** What a caption-less media message says instead of nothing. Only these two
- *  kinds get their own word here ([photo] comes from image_path, which an
- *  image sets instead of a kind); ANYTHING ELSE IS `[file]`, including a kind
- *  a later Baileys invents - an unknown kind must render as a file, never as
- *  a blank line, which is the whole point of the rule. */
+/** What a caption-less media message says instead of the raw "(voice)" marker
+ *  the persist boundary wrote. Only these two kinds get their own word here
+ *  ([photo] is handled from image_path, which an image sets instead of a
+ *  kind); ANYTHING ELSE IS `[file]`, including a kind a later Baileys
+ *  invents - an unknown kind must still name itself as a file. */
 const MEDIA_PLACEHOLDER: Record<string, string> = {
   voice: "[voice]",
   video: "[video]",
@@ -667,14 +680,30 @@ export function renderLogEntry(
         : entry.routed === false
           ? `${entry.user}${NOT_ADDRESSED}`
           : entry.user,
-    text: entry.text || mediaPlaceholder(entry),
+    text: mediaPlaceholder(entry) || entry.text,
   };
 }
 
-/** "" when the entry carries no media at all - a genuinely empty line stays
- *  empty rather than being labelled a file it never had. */
+/** "" unless this entry IS caption-less media, in which case the placeholder.
+ *
+ *  A CAPTION-LESS MEDIA MESSAGE NEVER REACHES HERE AS AN EMPTY STRING, and
+ *  assuming it did made the first version of this dead code. server.ts's
+ *  persist boundary computes `text || (media ? "(" + media.kind + ")" : "")`
+ *  (contentText, and the same rule on the routed:false context path), so what
+ *  is on disk for a caption-less photo is the literal "(image)" - and that
+ *  marker is load-bearing elsewhere: the live notification carries the same
+ *  bytes, so it cannot simply be dropped at the source.
+ *
+ *  The marker is therefore recognised rather than parsed: it is rebuilt from
+ *  the entry's OWN fields and compared, so a real caption that merely looks
+ *  like a marker for a different kind is untouched, and a caption that is
+ *  byte-identical to this entry's own marker is indistinguishable from the
+ *  marker by construction. An image sets image_path and never a kind. */
 function mediaPlaceholder(entry: ViewableEntry): string {
-  if (entry.image_path) return "[photo]";
-  if (!entry.attachment_kind) return "";
-  return MEDIA_PLACEHOLDER[entry.attachment_kind] ?? "[file]";
+  const kind = entry.image_path ? "image" : entry.attachment_kind;
+  if (!kind) return "";
+  // A real caption wins; "" is included because a hand-written or legacy line
+  // can still be empty, and that is the case this was always meant to cover.
+  if (entry.text && entry.text !== `(${kind})`) return "";
+  return kind === "image" ? "[photo]" : (MEDIA_PLACEHOLDER[kind] ?? "[file]");
 }

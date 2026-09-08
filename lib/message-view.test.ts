@@ -111,8 +111,11 @@ describe("renderLogEntry", () => {
 });
 
 // A caption-less photo or voice note is a real message that the count counts.
-// Rendering it as an empty line made the count and the view disagree, which is
-// what R5 forbids.
+// It reached the view as the raw marker "(image)" / "(voice)" that server.ts's
+// persist boundary writes - `text || "(" + media.kind + ")"` - so these
+// entries are built THE WAY THE PIPELINE WRITES THEM, not with an empty text
+// field. The first version of this test did the latter, and so passed against
+// a placeholder that no real message could ever reach.
 describe("renderLogEntry - caption-less media placeholders", () => {
   const media = (extra: Partial<ViewableEntry>): ViewableEntry => ({
     user: "Priya",
@@ -121,30 +124,35 @@ describe("renderLogEntry - caption-less media placeholders", () => {
     direction: "in",
     ...extra,
   });
+  /** Exactly what persistMessage stores for caption-less media of `kind`. */
+  const asStored = (kind: string, extra: Partial<ViewableEntry> = {}) =>
+    media({
+      text: `(${kind})`,
+      ...(kind === "image"
+        ? { image_path: "C:/inbox/x.jpg" }
+        : { attachment_kind: kind }),
+      ...extra,
+    });
 
-  test("a photo says [photo] - an image sets image_path and no kind", () => {
-    expect(renderLogEntry(media({ image_path: "C:/inbox/x.jpg" }), "Kaushik"))
-      .toEqual({ who: "Priya", text: "[photo]" });
+  test("a photo stored as (image) says [photo]", () => {
+    expect(renderLogEntry(asStored("image"), "Kaushik")).toEqual({
+      who: "Priya",
+      text: "[photo]",
+    });
   });
 
   test("voice and video each get their own word", () => {
-    expect(
-      renderLogEntry(media({ attachment_kind: "voice" }), "Kaushik").text,
-    ).toBe("[voice]");
-    expect(
-      renderLogEntry(media({ attachment_kind: "video" }), "Kaushik").text,
-    ).toBe("[video]");
+    expect(renderLogEntry(asStored("voice"), "Kaushik").text).toBe("[voice]");
+    expect(renderLogEntry(asStored("video"), "Kaushik").text).toBe("[video]");
   });
 
-  test("every other kind, known or not, is [file] - never a blank line", () => {
+  test("every other kind, known or not, is [file] - never a raw marker", () => {
     for (const kind of ["document", "sticker", "audio", "hologram"]) {
-      expect(
-        renderLogEntry(media({ attachment_kind: kind }), "Kaushik").text,
-      ).toBe("[file]");
+      expect(renderLogEntry(asStored(kind), "Kaushik").text).toBe("[file]");
     }
   });
 
-  test("a caption wins - the placeholder only fills an empty line", () => {
+  test("a real caption wins over the placeholder", () => {
     expect(
       renderLogEntry(
         media({ text: "look at this", image_path: "C:/inbox/x.jpg" }),
@@ -153,16 +161,29 @@ describe("renderLogEntry - caption-less media placeholders", () => {
     ).toBe("look at this");
   });
 
+  test("a caption that names a DIFFERENT kind is left alone", () => {
+    // Only this entry's OWN marker is treated as absence. Someone typing
+    // "(voice)" under a photo has written a caption, and it survives.
+    expect(
+      renderLogEntry(
+        media({ text: "(voice)", image_path: "C:/inbox/x.jpg" }),
+        "Kaushik",
+      ).text,
+    ).toBe("(voice)");
+  });
+
+  test("an empty text with media still gets one - legacy and hand-written lines", () => {
+    expect(
+      renderLogEntry(media({ attachment_kind: "voice" }), "Kaushik").text,
+    ).toBe("[voice]");
+  });
+
   test("no media at all stays empty rather than being called a file", () => {
     expect(renderLogEntry(media({}), "Kaushik").text).toBe("");
   });
 
-  test("the owner's own caption-less photo gets it too", () => {
-    const entry = media({
-      by: "owner",
-      direction: "out",
-      attachment_kind: "video",
-    });
+  test("the owner's own caption-less video gets it too", () => {
+    const entry = asStored("video", { by: "owner", direction: "out" });
     expect(renderLogEntry(entry, "Kaushik")).toEqual({
       who: "Kaushik",
       text: "[video]",
@@ -377,6 +398,23 @@ describe("formatChatCounts", () => {
     unreplied: 1,
     mentionGated: false,
     ...over,
+  });
+
+  // A group subject is peer-controlled and nothing upstream clips it: safeName
+  // substitutes characters and oneLine collapses whitespace, and neither
+  // bounds length. One admin could pad every row of the session-start list to
+  // whatever they liked.
+  test("one absurd name cannot widen the whole list", () => {
+    const out = formatChatCounts([
+      chat({ name: "A".repeat(500), unreplied: 2 }),
+      chat({ name: "Soham" }),
+    ]);
+    for (const line of out.split("\n")) expect(line.length).toBeLessThan(45);
+    // The short row is not padded out to the long one.
+    expect(out).toContain("Soham");
+    // The long name is clipped, not merely un-padded.
+    expect(out).not.toContain("A".repeat(40));
+    expect(out).toContain("…");
   });
 
   test("no message text appears anywhere - the whole point of the change", () => {
@@ -1350,9 +1388,9 @@ describe("the masked handle the ambiguity list prints is accepted back", () => {
     expect(msg).not.toContain("447900900123");
 
     // Not said when the rows already differ - two names, one question.
-    expect(
-      ambiguousChatMessage("mum", [dm, group]),
-    ).not.toContain("render identically");
+    expect(ambiguousChatMessage("mum", [dm, group])).not.toContain(
+      "render identically",
+    );
   });
 
   test("two DMs sharing a last-four re-ask instead of picking the first", () => {

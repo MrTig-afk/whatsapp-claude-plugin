@@ -483,10 +483,18 @@ const NO_GROUPS_NOTE =
 const NO_SAVED_NAMES_NOTE =
   "No saved contact names have arrived from WhatsApp yet either - the server asks for your address book once on connect, so they fill in by themselves.";
 
+// PRINTS THE COMMAND, rather than telling the reader to go and run "it".
+// This is the message a Remote Control, headless or piped session gets, and
+// there the reader has no window to have opened this from and no path to
+// guess - naming the route without naming the command left them stuck, which
+// is the hang spec R2 asks to replace with an exact instruction. The BARE
+// command, no `!` prefix (owner, 2026-09-05): the in-session `!` form is
+// Claude-Code-only and belongs to T19.
 const NEEDS_TERMINAL =
   "The access screen needs a real terminal - stdin here is not one.\n" +
-  "Run it directly in your own terminal window (not through a pipe, a script or an AI session), " +
-  'or change one entry at a time with "allow", "remove", "group add" or "group rm".';
+  "Run this in your own terminal window (not through a pipe, a script or an AI session):\n" +
+  `  ${WIZARD_CMD}\n` +
+  'Or change one entry at a time here with "allow", "remove", "group add" or "group rm".';
 
 // One screen: a search line, a `Picked:` chip line, then CONTACTS left and
 // GROUPS right, everything Claude can already reach pre-ticked. Untick to
