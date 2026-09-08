@@ -120,7 +120,8 @@ export function to24Hour(hr: number, ampm: string | undefined): number {
 // tool that writes CRLF) matched nothing here, so the user's crons vanished
 // with no error at all. The .env loader near the top of server.ts already
 // tolerates CRLF for exactly this reason.
-const CRON_SECTION_RE = /## Cron Jobs\r?\n([\s\S]*?)(?=\r?\n## |\r?\n# |$)/;
+export const CRON_SECTION_RE =
+  /## Cron Jobs\r?\n([\s\S]*?)(?=\r?\n## |\r?\n# |$)/;
 
 export function parseCronSection(content: string): CronParseResult {
   const jobs: ParsedCron[] = [];
@@ -157,10 +158,31 @@ export function parseCronSection(content: string): CronParseResult {
     } else if (dailyMatch) {
       const hr = to24Hour(parseInt(dailyMatch[1]), dailyMatch[3]);
       const min = parseInt(dailyMatch[2] || "0");
-      if (desc) candidates.push({ cron: `${min} ${hr} * * *`, prompt: desc });
+      candidates.push({ cron: `${min} ${hr} * * *`, prompt: desc });
     } else if (cronMatch) {
-      if (desc)
-        candidates.push({ cron: `*/${cronMatch[1]} * * * *`, prompt: desc });
+      candidates.push({ cron: `*/${cronMatch[1]} * * * *`, prompt: desc });
+    }
+
+    // A BULLET THAT PRODUCES NOTHING IS REPORTED, NOT DROPPED. Silently
+    // ignoring it is the exact failure the errors channel and the 0.23.0 note
+    // were added to end: the user wrote a job, the file looks right, and
+    // nothing ever runs. Two ways it happened, and they need different
+    // wording because the user has to fix different halves of the line.
+    if (candidates.length === 0) {
+      errors.push(
+        `${line.trim()} → no schedule recognised; use "every N min", "daily 9am", "daily 09:00", or two times joined by "&"`,
+      );
+      continue;
+    }
+    // The description IS the prompt, so a bullet without one schedules an
+    // empty task. Checked ONCE here rather than inside two of the three
+    // branches, which is how `daily`/`every` silently dropped such a line
+    // while the two-times branch happily built a job with an empty prompt.
+    if (!desc) {
+      errors.push(
+        `${line.trim()} → a schedule but nothing to run; the text after "**Name**:" is the prompt`,
+      );
+      continue;
     }
 
     for (const candidate of candidates) {

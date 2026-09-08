@@ -155,4 +155,39 @@ describe("parseCronSection", () => {
       errors: [],
     });
   });
+
+  // A bullet that matched NO schedule used to produce no job and no error -
+  // the exact silent drop the errors channel exists to end. The user writes a
+  // job, the file looks right, and nothing ever runs.
+  test("a bullet with no recognisable schedule is reported, not dropped", () => {
+    for (const line of [
+      "- **Digest**: daily at 9am", // "at" breaks the daily pattern
+      "- **Standup**: every morning",
+      "- **Thing**: just some prose",
+    ]) {
+      const { jobs, errors } = parseCronSection(wrap(line));
+      expect(jobs).toEqual([]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("no schedule recognised");
+    }
+  });
+
+  // The description IS the prompt, and it is everything after "**Name**:" -
+  // so "- **Digest**: daily 9:00" has the prompt "daily 9:00" and is a valid
+  // job. The prompt is only empty when the schedule sits INSIDE the name and
+  // nothing follows the colon. Checked once for all three branches now:
+  // `daily`/`every` used to drop such a line silently while the two-times
+  // branch built a job with an empty prompt.
+  test("a schedule with nothing to run is reported, in every branch", () => {
+    for (const line of [
+      "- **daily 9:00**:",
+      "- **every 30 min**:",
+      "- **daily 9:00 & 18:00**:",
+    ]) {
+      const { jobs, errors } = parseCronSection(wrap(line));
+      expect(jobs).toEqual([]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("nothing to run");
+    }
+  });
 });

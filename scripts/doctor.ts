@@ -27,6 +27,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { CRON_SECTION_RE, parseCronSection } from "../lib/cron";
 
 const STATE_DIR =
   process.env.WHATSAPP_STATE_DIR ?? join(homedir(), ".whatsapp-channel");
@@ -494,18 +495,28 @@ function checkGroupConfigs(acc: AccessShape | null): void {
       );
       continue;
     }
-    // Exact regex the server uses (loadGroupCrons) — a heading that doesn't
-    // match it byte-for-byte is silently ignored.
-    const section = content.match(/## Cron Jobs\n([\s\S]*?)(?=\n## |\n# |$)/);
-    if (section) {
-      const bullets = section[1]
-        .split("\n")
-        .filter((l) => l.startsWith("- ")).length;
+    // THE SERVER'S OWN PARSER, imported - not a second copy of its regex.
+    // The copy that used to live here was written as "the exact regex the
+    // server uses", then lib/cron.ts gained \r?\n for CRLF files and this one
+    // did not. So a config.md saved by a Windows editor scheduled correctly
+    // while doctor WARNed and told the user to rename a heading that was
+    // already right - a diagnostic contradicting the thing it diagnoses.
+    // Sharing the parser also means doctor now reports the JOBS that will run
+    // and the lines that were rejected, rather than counting bullets and
+    // assuming each one became a job.
+    if (CRON_SECTION_RE.test(content)) {
+      const { jobs, errors } = parseCronSection(content);
       report(
         "INFO",
         "group-configs",
-        `${gid}: ## Cron Jobs section with ${bullets} ${bullets === 1 ? "entry" : "entries"}`,
+        `${gid}: ## Cron Jobs section with ${jobs.length} ${jobs.length === 1 ? "job" : "jobs"}`,
       );
+      for (const err of errors) {
+        report("WARN", "group-configs", `${gid}: ${err}`, {
+          kind: "manual",
+          text: `Fix that line in ${cfg} - it is in the section but schedules nothing`,
+        });
+      }
     } else if (/^#{1,6}\s.*cron/im.test(content)) {
       report(
         "WARN",

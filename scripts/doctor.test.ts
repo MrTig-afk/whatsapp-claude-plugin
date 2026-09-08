@@ -246,15 +246,42 @@ describe("group-configs", () => {
     expect(out).toContain("[WARN] group-configs: 123@g.us");
     expect(out).toContain('not exactly "## Cron Jobs"');
   });
-  test("exact heading → INFO with entry count", () => {
+  test("exact heading → INFO with the job count", () => {
     const out = runDoctor(
       withGroup(
         "# P\n\n## Cron Jobs\n\n- daily 9am standup\n- every 30 min check\n",
       ),
     );
     expect(out).toContain(
-      "[INFO] group-configs: 123@g.us: ## Cron Jobs section with 2 entries",
+      "[INFO] group-configs: 123@g.us: ## Cron Jobs section with 2 jobs",
     );
+  });
+
+  // The regression this whole change exists for: doctor kept its own copy of
+  // the section regex, lib/cron.ts gained \r?\n for CRLF files, and the copy
+  // did not. A Windows-saved config.md then scheduled fine while doctor told
+  // the user to rename a heading that was already correct.
+  test("a CRLF config.md is recognised, not WARNed about", () => {
+    const out = runDoctor(
+      withGroup(
+        "# P\r\n\r\n## Cron Jobs\r\n\r\n- daily 9am standup\r\n- every 30 min check\r\n",
+      ),
+    );
+    expect(out).toContain("## Cron Jobs section with 2 jobs");
+    expect(out).not.toContain('not exactly "## Cron Jobs"');
+  });
+
+  // doctor now reports what the server's parser rejected, instead of counting
+  // bullets and assuming each one became a job.
+  test("a bullet that schedules nothing is reported, not counted", () => {
+    const out = runDoctor(
+      withGroup(
+        "# P\n\n## Cron Jobs\n\n- daily 9am standup\n- **Digest**: daily at 9am\n",
+      ),
+    );
+    expect(out).toContain("## Cron Jobs section with 1 job");
+    expect(out).toContain("[WARN] group-configs: 123@g.us");
+    expect(out).toContain("no schedule recognised");
   });
   test("config without cron → PASS", () => {
     const out = runDoctor(withGroup("# Personality\n\nBe helpful.\n"));
