@@ -66,6 +66,7 @@ import {
   agedOutLine,
   ambiguousChatMessage,
   awaitingReply,
+  byTs,
   catchUpWindow,
   type ChatCount,
   chatDisplayName,
@@ -2390,11 +2391,19 @@ async function waitForUnreplied(maxMs: number): Promise<MessageLogEntry[]> {
  *  whole backlog on every call. Both readers route through here, so the cap
  *  lives here rather than at two call sites. NEWEST kept, oldest dropped, the
  *  way catch_up's window does it; the callers' "N unreplied message(s)" count
- *  is the true total either way. */
+ *  is the true total either way.
+ *
+ *  SORTED BEFORE SLICING, for the reason catchUpWindow gives: getUnreplied
+ *  hands back messages.jsonl's APPEND order, which is usually chronological
+ *  and is not guaranteed to be - handleMessage awaits a media download and a
+ *  group-name lookup before it persists, so a text that arrived second can
+ *  land first, and a reconnect backlog is appended at the tail. Slicing raw
+ *  file order would drop a genuinely newer message while the header claimed
+ *  the newest were kept. */
 function formatMessages(entries: MessageLogEntry[]): string {
   const owner = ownerDisplayName();
   const hidden = Math.max(0, entries.length - MAX_CATCH_UP_LIMIT);
-  const body = (hidden ? entries.slice(-MAX_CATCH_UP_LIMIT) : entries)
+  const body = (hidden ? [...entries].sort(byTs).slice(-MAX_CATCH_UP_LIMIT) : entries)
     .map((m) => {
       const view = renderLogEntry(m, owner);
       const parts = [`[${m.ts}] ${view.who} in ${m.group_name ?? m.chat_id}:`];
@@ -2406,7 +2415,12 @@ function formatMessages(entries: MessageLogEntry[]): string {
     })
     .join("\n\n");
   if (!hidden) return body;
-  return `(showing the newest ${MAX_CATCH_UP_LIMIT}; ${hidden} older waiting message(s) not shown - name one chat with catch_up, or filter unreplied with chat_id, to reach them)\n\n${body}`;
+  // The route named here has to actually work. `unreplied` applies its
+  // chat_id filter BEFORE this cap, so when one busy chat holds more than the
+  // ceiling, filtering by chat_id truncates identically and is a dead end -
+  // catch_up with an explicit limit is the only way through, and only up to
+  // the same ceiling.
+  return `(showing the newest ${MAX_CATCH_UP_LIMIT}; ${hidden} older waiting message(s) not shown - open one chat at a time with catch_up chat="<the chat>" limit=${MAX_CATCH_UP_LIMIT}, which is the only way to see any of them. Filtering unreplied by chat_id does NOT help: this ceiling is applied after that filter)\n\n${body}`;
 }
 
 function getUnreplied(): MessageLogEntry[] {
@@ -2646,6 +2660,13 @@ function loadAgedOut(): AgedOut {
 }
 
 function saveAgedOut(record: AgedOut): void {
+  // The same guard saveAccess has, and for the reason ACCESS.md states: a
+  // static deployment writes no local state and cannot be made to by an env
+  // var. This file is exactly the residue it opted out of - the ids are
+  // hashed, but by design the record OUTLIVES the messages it describes, by
+  // up to 30 days. pruneMessageLog's hourly tick is registered
+  // unconditionally, so without this the file appears in static mode too.
+  if (STATIC) return;
   try {
     const tmp = AGED_OUT_FILE + ".tmp";
     writeFileSync(tmp, JSON.stringify(record, null, 2) + "\n", { mode: 0o600 });

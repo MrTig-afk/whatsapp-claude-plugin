@@ -22,7 +22,6 @@ import {
   NOT_ADDRESSED,
   countAgedOut,
   updateAgedOut,
-  recentWindow,
   renderLogEntry,
   resolveTtlMs,
   type ViewableEntry,
@@ -111,6 +110,66 @@ describe("renderLogEntry", () => {
   });
 });
 
+// A caption-less photo or voice note is a real message that the count counts.
+// Rendering it as an empty line made the count and the view disagree, which is
+// what R5 forbids.
+describe("renderLogEntry - caption-less media placeholders", () => {
+  const media = (extra: Partial<ViewableEntry>): ViewableEntry => ({
+    user: "Priya",
+    text: "",
+    ts: hoursAgo(1),
+    direction: "in",
+    ...extra,
+  });
+
+  test("a photo says [photo] - an image sets image_path and no kind", () => {
+    expect(renderLogEntry(media({ image_path: "C:/inbox/x.jpg" }), "Kaushik"))
+      .toEqual({ who: "Priya", text: "[photo]" });
+  });
+
+  test("voice and video each get their own word", () => {
+    expect(
+      renderLogEntry(media({ attachment_kind: "voice" }), "Kaushik").text,
+    ).toBe("[voice]");
+    expect(
+      renderLogEntry(media({ attachment_kind: "video" }), "Kaushik").text,
+    ).toBe("[video]");
+  });
+
+  test("every other kind, known or not, is [file] - never a blank line", () => {
+    for (const kind of ["document", "sticker", "audio", "hologram"]) {
+      expect(
+        renderLogEntry(media({ attachment_kind: kind }), "Kaushik").text,
+      ).toBe("[file]");
+    }
+  });
+
+  test("a caption wins - the placeholder only fills an empty line", () => {
+    expect(
+      renderLogEntry(
+        media({ text: "look at this", image_path: "C:/inbox/x.jpg" }),
+        "Kaushik",
+      ).text,
+    ).toBe("look at this");
+  });
+
+  test("no media at all stays empty rather than being called a file", () => {
+    expect(renderLogEntry(media({}), "Kaushik").text).toBe("");
+  });
+
+  test("the owner's own caption-less photo gets it too", () => {
+    const entry = media({
+      by: "owner",
+      direction: "out",
+      attachment_kind: "video",
+    });
+    expect(renderLogEntry(entry, "Kaushik")).toEqual({
+      who: "Kaushik",
+      text: "[video]",
+    });
+  });
+});
+
 describe("awaitingReply", () => {
   test("inbound, unreplied: waiting", () => {
     expect(awaitingReply({ replied: false, direction: "in" })).toBe(true);
@@ -196,24 +255,6 @@ describe("keepLogLine", () => {
   });
   test("an unparseable ts is dropped whatever the ttl", () => {
     expect(keepLogLine({ ts: "nope" }, now)).toBe(false);
-  });
-});
-
-describe("recentWindow", () => {
-  test("8 entries in shuffled ts order, limit 5: returns the 5 newest, ascending ts", () => {
-    const entries = [3, 7, 1, 8, 2, 6, 4, 5].map((n) => ({
-      ts: hoursAgo(n),
-      n,
-    }));
-    const input = [...entries];
-    const result = recentWindow(entries, 5);
-    expect(result.map((e) => e.n)).toEqual([5, 4, 3, 2, 1]);
-    // ascending ts (oldest of the kept window first)
-    for (let i = 1; i < result.length; i++) {
-      expect(result[i - 1].ts.localeCompare(result[i].ts)).toBeLessThan(0);
-    }
-    // input array unmodified
-    expect(entries).toEqual(input);
   });
 });
 
@@ -1293,6 +1334,25 @@ describe("the masked handle the ambiguity list prints is accepted back", () => {
     expect(ambiguousChatMessage("mum", [dm, group])).not.toContain(
       "61400001111",
     );
+  });
+
+  test("when two rows render identically, the message names a route that works", () => {
+    // Both unsaved, both ending 0123: same masked fallback name AND same
+    // handle, so every argument lands back on the same two-way ambiguity.
+    // Without this line the chat is unreachable, which is a dead end rather
+    // than a question.
+    const a = { chatId: "447700900123@s.whatsapp.net", name: "•••••0123" };
+    const b = { chatId: "447900900123@s.whatsapp.net", name: "•••••0123" };
+    const msg = ambiguousChatMessage("0123", [a, b]);
+    expect(msg).toContain("render identically");
+    expect(msg).toContain("unreplied");
+    expect(msg).not.toContain("447700900123");
+    expect(msg).not.toContain("447900900123");
+
+    // Not said when the rows already differ - two names, one question.
+    expect(
+      ambiguousChatMessage("mum", [dm, group]),
+    ).not.toContain("render identically");
   });
 
   test("two DMs sharing a last-four re-ask instead of picking the first", () => {

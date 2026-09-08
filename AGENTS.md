@@ -96,6 +96,15 @@ WhatsApp (phone) ←─ Baileys ─→ MCP Server (server.ts) ←─ stdio ─�
    `version`: they must match each other and be newer than before. Skipping one makes
    `plugin update` silently no-op for users. Semver: patch for fixes, minor for
    features.
+   **Same ritual, third step: write the banner notes.** Add or extend the entry for
+   that version in `scripts/update-notice.ts`'s `CHANGELOG`. The note text is
+   hand-written per release — nothing derives it — so a bump without it ships a
+   release the banner never mentions, or worse, leaves an older note standing that
+   the new release just made false (that is how the 0.23.0 permissions note ended up
+   telling users a still-broken block was fixed). **One short line per change, under
+   ~100 characters.** A note that will not fit is two notes, never a wrapped
+   paragraph: they are joined with a blank line between bullets and read at session
+   start, and 0.22.0 once stacked thirteen paragraphs there.
 2. **Danger zones in `server.ts`:** connection lifecycle, the singleton lock, and
    allowlist/access gating have each regressed before. Before editing them, grep the
    whole file for every symbol you touch (`grep -n <symbol> server.ts` — module-level

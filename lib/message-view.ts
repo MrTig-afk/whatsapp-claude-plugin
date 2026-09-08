@@ -12,6 +12,11 @@ export type ViewableEntry = {
   by?: "owner";
   /** false = kept for context only, was never addressed to the agent. */
   routed?: false;
+  /** Media evidence, for the caption-less placeholder (see renderLogEntry).
+   *  An image sets image_path and NEVER attachment_kind - the server downloads
+   *  images eagerly and files everything else lazily - so both are consulted. */
+  image_path?: string;
+  attachment_kind?: string;
 };
 
 /** An inbound line still waiting for an answer. A `routed: false` line was
@@ -364,20 +369,31 @@ export function ambiguousChatMessage(want: string, matches: ChatRef[]): string {
   // last four digits. Built masked at the point the string is created, not
   // scrubbed afterwards - a filter someone forgets to call is a real number
   // sitting in a transcript.
-  const rows = matches
-    .slice(0, AMBIGUOUS_LIST_LIMIT)
-    .map((m) => {
-      const isGroup = m.chatId.endsWith("@g.us");
-      const shown = isGroup ? groupAnchor(m.chatId) : maskNumber(m.chatId);
-      return `  - ${m.name} [${isGroup ? "group" : "DM"}] ${shown}`;
-    })
-    .join("\n");
+  const rowList = matches.slice(0, AMBIGUOUS_LIST_LIMIT).map((m) => {
+    const isGroup = m.chatId.endsWith("@g.us");
+    const shown = isGroup ? groupAnchor(m.chatId) : maskNumber(m.chatId);
+    return `  - ${m.name} [${isGroup ? "group" : "DM"}] ${shown}`;
+  });
+  const rows = rowList.join("\n");
   const more = matches.length - AMBIGUOUS_LIST_LIMIT;
   const tail = more > 0 ? `\n  ...and ${more} more - narrow the name.` : "";
+  // TWO ROWS CAN RENDER IDENTICALLY, and then this is a dead end rather than a
+  // question. Two unsaved contacts whose numbers end in the same four digits
+  // share BOTH the masked fallback name and the masked handle, so every
+  // argument the caller could pass - the name, the handle, any id prefix they
+  // share - lands back here forever. resolveChat is right to refuse (guessing
+  // is how a private reply reaches the wrong person), so the way out has to be
+  // the full jid: it is unique and resolveChat accepts it. This message must
+  // not print it, because a DM's jid IS the number - `unreplied` is where it
+  // already appears, so that is where the caller is sent.
+  const indistinguishable =
+    rowList.length !== new Set(rowList).size
+      ? "\n  Two of these render identically and no argument here can separate them - call unreplied, take the full chat_id it prints, and pass that as `chat`."
+      : "";
   // ASK, do not guess. A group id above is callable as-is; a DM's is masked, so
   // the way through is the owner saying which - "the group" or "the person" -
   // which is exactly how he said he would answer it.
-  return `"${want}" matches ${matches.length} chats. Ask which one is meant - name the group or the person - and use their answer to narrow the chat argument:\n${rows}${tail}`;
+  return `"${want}" matches ${matches.length} chats. Ask which one is meant - name the group or the person - and use their answer to narrow the chat argument:\n${rows}${tail}${indistinguishable}`;
 }
 
 export type ChatCount = {
@@ -552,15 +568,8 @@ export function agedOutLine(count: number, days: number): string {
 /** How many messages per chat catch_up replays. */
 export const RECENT_LIMIT = 5;
 
-const byTs = <T extends { ts: string }>(a: T, b: T) => a.ts.localeCompare(b.ts);
-
-/** Last `limit` entries, oldest-first. Non-mutating. */
-export function recentWindow<T extends { ts: string }>(
-  entries: T[],
-  limit: number = RECENT_LIMIT,
-): T[] {
-  return [...entries].sort(byTs).slice(-limit);
-}
+export const byTs = <T extends { ts: string }>(a: T, b: T) =>
+  a.ts.localeCompare(b.ts);
 
 /** THE catch_up window: the last `limit` lines from each side, exactly as
  *  USAGE.md has always promised - but the INBOUND half is filled by the
@@ -623,12 +632,30 @@ export function catchUpWindow<
   return [...waiting, ...chatter, ...outbound].sort(byTs);
 }
 
+/** What a caption-less media message says instead of nothing. Only these two
+ *  kinds get their own word here ([photo] comes from image_path, which an
+ *  image sets instead of a kind); ANYTHING ELSE IS `[file]`, including a kind
+ *  a later Baileys invents - an unknown kind must render as a file, never as
+ *  a blank line, which is the whole point of the rule. */
+const MEDIA_PLACEHOLDER: Record<string, string> = {
+  voice: "[voice]",
+  video: "[video]",
+};
+
 /** How one entry renders. The ONLY place the owner label exists. Text is
  *  shown verbatim for every line the log still holds: an owner hand reply
  *  used to fade to "replied (text expired)" after an hour, which left every
  *  chat older than that reading one-sided - their half in full, the owner's
  *  half blanked - exactly when catch_up is wanted (owner, 2026-08-28).
- *  keepLogLine is now the whole retention story. */
+ *  keepLogLine is now the whole retention story.
+ *
+ *  A MEDIA MESSAGE WITH NO CAPTION IS STILL A MESSAGE (spec R5). Without a
+ *  placeholder it rendered as an empty line, so the count said one was waiting
+ *  and the view appeared to show nothing - the count and the view have to
+ *  agree. Both renderers take their text from here, so this is the one place
+ *  it belongs; the caller's own `(image: ...)` / `(voice attachment)` suffix
+ *  still follows, because a placeholder says WHAT arrived and the suffix says
+ *  how to open it. */
 export function renderLogEntry(
   entry: ViewableEntry,
   ownerName: string,
@@ -640,6 +667,14 @@ export function renderLogEntry(
         : entry.routed === false
           ? `${entry.user}${NOT_ADDRESSED}`
           : entry.user,
-    text: entry.text,
+    text: entry.text || mediaPlaceholder(entry),
   };
+}
+
+/** "" when the entry carries no media at all - a genuinely empty line stays
+ *  empty rather than being labelled a file it never had. */
+function mediaPlaceholder(entry: ViewableEntry): string {
+  if (entry.image_path) return "[photo]";
+  if (!entry.attachment_kind) return "";
+  return MEDIA_PLACEHOLDER[entry.attachment_kind] ?? "[file]";
 }
