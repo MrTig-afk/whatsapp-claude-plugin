@@ -35,6 +35,19 @@ describe("parseCronField", () => {
     expect(parseCronField("*/0", 0, 59)).toBe(false);
   });
 
+  // The base was parsed, validated, and then thrown away: "9/2" ran as "*/2".
+  // Unreachable while every schedule came from prose; reachable the moment the
+  // explicit (cron: "expr") form was accepted.
+  test("a step BASE is honoured, not discarded", () => {
+    expect(parseCronField("9/2", 9, 23)).toBe(true);
+    expect(parseCronField("9/2", 11, 23)).toBe(true);
+    expect(parseCronField("9/2", 0, 23)).toBe(false);
+    expect(parseCronField("9/2", 10, 23)).toBe(false);
+    // "*" still means "from zero", so the common form is unchanged.
+    expect(parseCronField("*/2", 0, 23)).toBe(true);
+    expect(parseCronField("*/2", 2, 23)).toBe(true);
+  });
+
   test("an out-of-range literal never matches", () => {
     expect(parseCronField("70", 70, 59)).toBe(false);
     expect(parseCronField("25", 25, 23)).toBe(false);
@@ -76,6 +89,13 @@ describe("validateCronExpr", () => {
 
   test("rejects the wrong number of fields", () => {
     expect(validateCronExpr("0 9 * *")).toMatch(/5 cron fields/);
+  });
+
+  // The base was checked for being numeric and never range-checked, so this
+  // validated clean and then behaved as "*/2" because the base was discarded.
+  test("rejects a step base outside the field range", () => {
+    expect(validateCronExpr("0 99/2 * * *")).toMatch(/step base 99/);
+    expect(validateCronExpr("0 9/2 * * *")).toBeNull();
   });
 });
 
@@ -154,6 +174,33 @@ describe("parseCronSection", () => {
       jobs: [],
       errors: [],
     });
+  });
+
+  // The explicit form the header has always documented, and which no branch
+  // parsed until now - it was silently dropped, then loudly rejected.
+  test('the documented (cron: "expr") form is parsed, and the clause is not part of the prompt', () => {
+    const { jobs, errors } = parseCronSection(
+      wrap('- **Digest**: post the daily digest (cron: "30 9 * * 1-5")'),
+    );
+    expect(errors).toEqual([]);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].cron).toBe("30 9 * * 1-5");
+    expect(jobs[0].prompt).toBe("post the daily digest");
+  });
+
+  test("an explicit cron expression is still validated", () => {
+    const { jobs, errors } = parseCronSection(
+      wrap('- **Bad**: do a thing (cron: "99 9 * * *")'),
+    );
+    expect(jobs).toEqual([]);
+    expect(errors).toHaveLength(1);
+  });
+
+  test("an explicit expression wins over prose that looks like a schedule", () => {
+    const { jobs } = parseCronSection(
+      wrap('- **Both**: remind me daily 9am (cron: "0 17 * * *")'),
+    );
+    expect(jobs.map((j) => j.cron)).toEqual(["0 17 * * *"]);
   });
 
   // A bullet that matched NO schedule used to produce no job and no error -

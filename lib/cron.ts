@@ -35,9 +35,19 @@ export function parseCronField(
   if (field === "*") return true;
   for (const part of field.split(",")) {
     if (part.includes("/")) {
-      const step = parseInt(part.split("/")[1]);
+      // THE BASE IS HONOURED, not discarded. `a/b` means "every b starting at
+      // a", and this read only the step - so "9/2" fired at 00,02,04… instead
+      // of 09,11,13…. That was unreachable while the only schedules came from
+      // prose (which never produces a base), and became reachable the moment
+      // the explicit (cron: "expr") form was accepted: a standard expression
+      // validated clean, was reported as one healthy job, and then ran at the
+      // wrong times with nothing to say so.
+      const [rawBase, rawStep] = part.split("/");
+      const step = parseInt(rawStep);
       if (!Number.isFinite(step) || step < 1 || step > max) continue;
-      if (now % step === 0) return true;
+      const base = rawBase === "*" ? 0 : parseInt(rawBase);
+      if (!Number.isFinite(base) || base < 0 || base > max) continue;
+      if (now >= base && (now - base) % step === 0) return true;
     } else if (part.includes("-")) {
       const [lo, hi] = part.split("-").map(Number);
       if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi > max) continue;
@@ -73,6 +83,12 @@ function validateField(part: string, spec: FieldSpec): string | null {
     const [base, rawStep] = part.split("/");
     if (base !== "*" && !/^\d+$/.test(base))
       return `${name} step base "${base}" is not a number or "*"`;
+    // RANGE-CHECKED like every other value. It was accepted as "a number" and
+    // never bounded, so "99/2" in an hour field passed validation and then
+    // behaved as "*/2" because parseCronField discarded the base entirely -
+    // valid-looking, reported healthy, firing at times nobody asked for.
+    if (base !== "*" && (Number(base) < min || Number(base) > max))
+      return `${name} step base ${base} is outside ${min}-${max}`;
     if (!/^\d+$/.test(rawStep))
       return `${name} step "${rawStep}" is not a number`;
     const step = Number(rawStep);
@@ -133,6 +149,14 @@ export function parseCronSection(content: string): CronParseResult {
   // Or:         - **Name**: cron expr — description
   const lines = section[1].split(/\r?\n/).filter((l) => l.startsWith("- "));
   for (const line of lines) {
+    // The EXPLICIT form this function's own header has always documented -
+    // `(cron: "expr")` - and which no branch actually parsed. It was silently
+    // dropped, and once the silent drop became a reported error, following the
+    // documented format earned the user a doctor WARN telling them to fix a
+    // line written the way the file advertises. It is also the most precise of
+    // the three forms, and validateCronExpr below already exists to check it,
+    // so parsing it is better than deleting the promise.
+    const explicitMatch = line.match(/\(\s*cron:\s*["']([^"']+)["']\s*\)/i);
     const cronMatch = line.match(/(?:每|every)\s*(\d+)\s*(?:分鐘|分|min)/i);
     const dailyMatch = line.match(
       /(?:每天|daily)\s*(\d{1,2}):?(\d{2})?\s*(am|pm)?/i,
@@ -141,10 +165,21 @@ export function parseCronSection(content: string): CronParseResult {
       /(?:每天|daily)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:&|和|,)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i,
     );
 
-    const desc = line.replace(/^-\s*\*\*[^*]+\*\*:?\s*/, "").trim();
+    // The `(cron: "...")` clause is a schedule, not part of what to run, so it
+    // comes out of the prompt - otherwise every explicit job would ask the
+    // agent to do its own crontab entry.
+    const desc = line
+      .replace(/^-\s*\*\*[^*]+\*\*:?\s*/, "")
+      .replace(/\(\s*cron:\s*["'][^"']+["']\s*\)/i, "")
+      .trim();
     const candidates: ParsedCron[] = [];
 
-    if (twiceMatch) {
+    // FIRST, because it is the only form the user stated exactly. The others
+    // infer a schedule from prose; if someone wrote the expression out, that
+    // is what they meant, and validateCronExpr below still has to agree.
+    if (explicitMatch) {
+      candidates.push({ cron: explicitMatch[1].trim(), prompt: desc });
+    } else if (twiceMatch) {
       // Two times per day — two entries. Each time's am/pm marker is captured
       // next to that time, not inferred from the whole line (a line like
       // "daily 1pm & 6am" previously mis-parsed both times off a single
@@ -175,9 +210,8 @@ export function parseCronSection(content: string): CronParseResult {
       continue;
     }
     // The description IS the prompt, so a bullet without one schedules an
-    // empty task. Checked ONCE here rather than inside two of the three
-    // branches, which is how `daily`/`every` silently dropped such a line
-    // while the two-times branch happily built a job with an empty prompt.
+    // empty task. Checked here rather than per-branch: the two-times branch
+    // never checked, and happily built a job with an empty prompt.
     if (!desc) {
       errors.push(
         `${line.trim()} → a schedule but nothing to run; the text after "**Name**:" is the prompt`,

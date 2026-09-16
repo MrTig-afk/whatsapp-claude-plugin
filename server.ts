@@ -78,6 +78,7 @@ import {
   updateAgedOut,
   isUsableLogEntry,
   keepLogLine,
+  oneLine,
   RECENT_LIMIT,
   renderLogEntry,
   resolveTtlMs,
@@ -1448,15 +1449,40 @@ async function ensureLidResolved(jid: string): Promise<void> {
 // that want "empty = anyone" (e.g. a group with no allowFrom restriction)
 // must guard the call themselves — see the `groups[jid].allowFrom` check
 // in gate(), which only calls this when the list is non-empty.
+/** ONE comparison, used by everything that asks "is this jid allowed".
+ *
+ *  It normalizes with Baileys' own jidNormalizedUser, which drops a `:device`
+ *  suffix and maps the legacy `@c.us` domain to `@s.whatsapp.net`.
+ *  scripts/ranking.ts's normalizeJid was written to mirror that function
+ *  exactly, and `access set owner` validates through it - so without the same
+ *  rule here the CLI ACCEPTED a value the server then rejected at runtime,
+ *  printed `owner = ...`, and the request quietly went somewhere else.
+ *
+ *  PRESERVED INVARIANT, because this is the access gate (AGENTS.md rule 2):
+ *  this does not widen WHO is allowed. Normalization only makes two spellings
+ *  of THE SAME ACCOUNT compare equal - the device suffix and the c.us domain
+ *  are notations for one user, which is precisely why Baileys ships the
+ *  function. No jid belonging to a different account can now match an entry
+ *  that it did not match before. The nine call sites - the DM gate, the group
+ *  gate, the permission binding, the reaction binding and the owner checks -
+ *  keep their existing semantics; they simply stop disagreeing with the CLI
+ *  about what the same person's jid looks like. */
 function isAllowedJid(jid: string, allowList: string[]): boolean {
   if (allowList.length === 0) return false;
-  const phone = resolveToPhone(jid);
-  if (allowList.includes(phone)) return true;
-  if (allowList.includes(jid)) return true;
-  for (const entry of allowList) {
-    if (resolveToPhone(entry) === phone) return true;
-  }
-  return false;
+  const canonical = (j: string) => jidNormalizedUser(resolveToPhone(j));
+  const phone = canonical(jid);
+  // AN EMPTY CANONICAL FORM MATCHES NOTHING. Measured against the vendored
+  // rc.9: jidNormalizedUser returns "" for "", for undefined, AND for a bare
+  // number with no domain - which is exactly the format
+  // /whatsapp-channel:configure asks the user to type. So a hand-edited
+  // access.json holding "886912345678" would have produced an empty canonical
+  // on BOTH sides and matched, admitting anything else that also canonicalized
+  // to empty. The previous exact-string implementation could not do that;
+  // comparing canonical forms can, so the guard belongs with the change that
+  // introduced the possibility. Fails closed: an unparseable jid is not
+  // allowed, it is refused.
+  if (!phone) return false;
+  return allowList.some((entry) => canonical(entry) === phone);
 }
 
 // ─── Group name cache ─────────────────────────────────────────────────
@@ -2403,12 +2429,20 @@ async function waitForUnreplied(maxMs: number): Promise<MessageLogEntry[]> {
 function formatMessages(entries: MessageLogEntry[]): string {
   const owner = ownerDisplayName();
   const hidden = Math.max(0, entries.length - MAX_CATCH_UP_LIMIT);
-  const body = (
-    hidden ? [...entries].sort(byTs).slice(-MAX_CATCH_UP_LIMIT) : entries
-  )
+  // SORTED UNCONDITIONALLY. The first version sorted only on the truncating
+  // branch, which made the ORDER depend on the VOLUME: five waiting messages
+  // rendered in append order (a photo whose download delayed its persist
+  // appearing after a text that arrived later), and a hundred and one
+  // rendered in timestamp order. Same tool, same day, two different answers.
+  // The slice is what the cap needs; the sort is what the reader needs.
+  const ordered = [...entries].sort(byTs);
+  const body = (hidden ? ordered.slice(-MAX_CATCH_UP_LIMIT) : ordered)
     .map((m) => {
       const view = renderLogEntry(m, owner);
-      const parts = [`[${m.ts}] ${view.who} in ${m.group_name ?? m.chat_id}:`];
+      // oneLine for the same reason chatDisplayName uses it: a peer-set
+      // subject with a newline forges a whole fake entry in this view.
+      const where = (m.group_name && oneLine(m.group_name)) || m.chat_id;
+      const parts = [`[${m.ts}] ${view.who} in ${where}:`];
       if (view.text) parts.push(view.text);
       if (m.image_path) parts.push(`(image: ${m.image_path})`);
       if (m.attachment_kind) parts.push(`(${m.attachment_kind} attachment)`);
@@ -2418,11 +2452,11 @@ function formatMessages(entries: MessageLogEntry[]): string {
     .join("\n\n");
   if (!hidden) return body;
   // The route named here has to actually work. `unreplied` applies its
-  // chat_id filter BEFORE this cap, so when one busy chat holds more than the
-  // ceiling, filtering by chat_id truncates identically and is a dead end -
-  // catch_up with an explicit limit is the only way through, and only up to
-  // the same ceiling.
-  return `(showing the newest ${MAX_CATCH_UP_LIMIT}; ${hidden} older waiting message(s) not shown - open one chat at a time with catch_up chat="<the chat>" limit=${MAX_CATCH_UP_LIMIT}, which is the only way to see any of them. Filtering unreplied by chat_id does NOT help: this ceiling is applied after that filter)\n\n${body}`;
+  // chat_id filter BEFORE calling this, so the ceiling applies per call to the
+  // FILTERED list: 300 waiting across five chats of 60 returns all 60 for any
+  // one chat. Only a single chat holding more than the ceiling is a dead end
+  // here, and catch_up with an explicit limit is what that case is for.
+  return `(showing the newest ${MAX_CATCH_UP_LIMIT}; ${hidden} older waiting message(s) not shown. This ceiling applies per call, after any chat_id filter - so unreplied chat_id="<jid>" shows one chat in full unless that chat alone holds more than ${MAX_CATCH_UP_LIMIT}; for that, use catch_up chat="<the chat>" limit=${MAX_CATCH_UP_LIMIT})\n\n${body}`;
 }
 
 function getUnreplied(): MessageLogEntry[] {
@@ -2942,8 +2976,58 @@ const mcp = new Server(
  *  fallback covers only an access.json that has never been stamped, i.e.
  *  static mode or before the first connect; it keeps the old behaviour rather
  *  than failing closed and silently swallowing permission requests. */
+let warnedStaleOwner = "";
 function permissionTarget(access: Access): string | undefined {
-  return access.owner ?? access.allowFrom[0];
+  const stored = access.owner;
+  // REVALIDATED ON EVERY READ, not just when it is written. `set owner` now
+  // requires an allowlisted contact, but NOTHING kept that true afterwards:
+  // `access remove`, the wizard's revoke path and ownerStamp (which returns
+  // an existing value untouched) all leave a stale owner behind. That is not
+  // cosmetic. permissionTarget kept returning the revoked contact, and the
+  // send site does no allowlist check of its own, so every permission request
+  // - up to 500 raw characters of the command being approved - went on being
+  // DM'd to someone the user had just removed. And it DEADLOCKED at the same
+  // time: claimPermission binds the answer to that chat while gate() now
+  // drops their inbound messages, so nobody could ever approve and the tool
+  // call hung with no diagnostic.
+  //
+  // `stored &&` rather than `??`: an empty string is a hand-edit meaning
+  // "cleared", and `??` steps over only null/undefined - lib/owner.ts's
+  // comment claimed otherwise and was wrong, which would have swallowed every
+  // permission request silently.
+  if (stored && isAllowedJid(stored, access.allowFrom)) return stored;
+  if (stored) {
+    // FALLING BACK TO YOU, NOT TO WHOEVER IS FIRST IN THE LIST (owner,
+    // 2026-09-09). The first version of this fix sent the request to
+    // allowFrom[0] - which stopped the leak to the revoked contact and
+    // started a quieter one to a contact the user never designated as
+    // approver, who then received the full command text. The linked account
+    // is the one address that is always right here: it is the user
+    // themselves, it is auto-added to the allowlist on connect, and both
+    // approval routes already work from their own note-to-self.
+    //
+    // A REVOKED OWNER AND AN UNSTAMPED ONE ARE DIFFERENT THINGS, which is why
+    // only this branch redirects. An unstamped install never made a choice,
+    // and ownerStamp deliberately preserves allowFrom[0] there so the
+    // migration changes nobody's delivery chat. A revoked owner IS a choice,
+    // reversed - and treating a reversal as licence to pick someone else is
+    // what made the original leak.
+    if (stored !== warnedStaleOwner) {
+      // Keyed on the VALUE, not a once-per-process latch: a second, different
+      // stale owner is a second thing worth saying, and the latch would have
+      // silently swallowed it.
+      warnedStaleOwner = stored;
+      logDiag(
+        `${LOG_PREFIX}: access.owner ${maskJid(stored)} is no longer allowlisted; permission requests go to your own chat until you set a new one with "access set owner <jid>".\n`,
+      );
+    }
+    // FAIL CLOSED before the first `open`: ownJid is only known once the
+    // connection opens, and until then the only other candidate is
+    // allowFrom[0] - the leak this branch exists to stop. Not sending is the
+    // right answer for that window; the send site already tolerates undefined.
+    return ownJid || undefined;
+  }
+  return access.allowFrom[0];
 }
 
 // Permission relay — forward to the owner's DM only.
@@ -3615,9 +3699,14 @@ const handleToolCall = async (req: {
       }
 
       case "catch_up": {
-        // `limit` widens the CONTEXT half only; unreplied lines are never
-        // capped (catchUpWindow). Clamped so a bad value cannot ask the server
-        // to render an entire 30-day log into one tool result.
+        // `limit` widens BOTH halves. Waiting lines are NOT exempt from it -
+        // they take the inbound slots first, but the window is still `limit`
+        // per side, which is exactly why the header below reports how many
+        // waiting messages it could not show. This note used to say unreplied
+        // lines were never capped; that was false, and the disclosure block
+        // 60 lines down carries an explicit warning that an edit trusting
+        // this note would delete it and turn a reported gap into a silent
+        // one. Clamped so a bad value cannot ask for an entire 30-day log.
         const rawLimit = Number(args.limit);
         // The FLOOR is RECENT_LIMIT, not 1, and it does two jobs.
         //
@@ -3707,7 +3796,7 @@ const handleToolCall = async (req: {
               ? ` — ${unreplied} unreplied` +
                 (hidden
                   ? ` (${hidden} of them NOT shown below - the window keeps the NEWEST waiting messages, so the hidden ones are the OLDEST. ${unreplied <= MAX_CATCH_UP_LIMIT ? `To see them all first, call catch_up again with chat="${chatId}" and limit=${unreplied}.` : `More are waiting than one call can show (ceiling ${MAX_CATCH_UP_LIMIT}); call catch_up with chat="${chatId}" and limit=${MAX_CATCH_UP_LIMIT} and expect ${unreplied - MAX_CATCH_UP_LIMIT} to remain unseen.`} Replying marks all ${unreplied} answered, shown or not)`
-                  : `, all shown below; replying marks all ${unreplied} answered`)
+                  : `, all shown below; replying marks these ${unreplied} answered (a message arriving before you reply is NOT included - reply snapshots the list as it stood when it started)`)
               : ""
           } ===`;
           const lines = entries.map((e) => {
@@ -4345,7 +4434,11 @@ async function handleMessage(msg: WAMessage, backlog = false): Promise<void> {
     // shows it.
     if (
       !backlog &&
-      tryClaimPermissionReply(msg, msg.key.remoteJid, extractText(msg.message))
+      tryClaimPermissionReply(
+        msg,
+        msg.key.remoteJid ?? "",
+        extractText(msg.message),
+      )
     )
       return;
     return logOwnerHandReply(msg);
@@ -4419,6 +4512,20 @@ async function handleMessage(msg: WAMessage, backlog = false): Promise<void> {
           replied: true,
           direction: "in",
           routed: false,
+          // The kind, so this line renders [photo] like every other one. This
+          // path returns before the EAGER download, so nothing is written to
+          // inbox/ - but storeMessage(msg) already ran above the gate, so
+          // download_attachment can fetch it WHILE THE ID IS STILL IN
+          // messageProtoStore (an in-memory FIFO capped at MAX_STORE, emptied
+          // by a restart - the log line outlives it by days). Two earlier
+          // versions of this comment were wrong in opposite directions: one
+          // said the file "never will be" fetchable, this one said it simply
+          // "works". Without the kind recorded, mediaPlaceholder has nothing
+          // to key on and a
+          // caption-less photo here showed the raw "(image)" marker while the
+          // identical photo on the routed path showed [photo]. Same room, two
+          // renderings, which is the inconsistency R5 exists to remove.
+          ...(dropMedia ? { attachment_kind: dropMedia.kind } : {}),
           ...(groupName && groupName !== remoteJid
             ? { group_name: groupName }
             : {}),
@@ -4511,6 +4618,19 @@ async function handleMessage(msg: WAMessage, backlog = false): Promise<void> {
     | undefined;
 
   const media = classifyMedia(msg.message);
+  // BACKLOG MEDIA STILL RECORDS ITS KIND. The download is skipped for backlog
+  // - that is what `!backlog` below is for, and it stays - but the kind is
+  // metadata classifyMedia has already worked out, and withholding it made
+  // the two paths disagree: the context path records it unconditionally, so
+  // after an hour offline an unaddressed group photo rendered [photo] while a
+  // caption-less DM photo from the same hour rendered the raw "(image)" and
+  // read as nothing having arrived. Backlog is precisely what catch_up
+  // exists for. storeMessage has already run, so download_attachment can
+  // usually fetch these - though not forever: messageProtoStore is an
+  // in-memory FIFO capped at MAX_STORE and empty after a restart, while the
+  // log line itself lives 7-30 days. So the kind is an honest statement of
+  // WHAT arrived, not a promise that the bytes are still retrievable.
+  if (media && backlog) attachment = { kind: media.kind, file_id: messageId };
   if (media && !backlog) {
     if (media.kind === "image") {
       // Eager download for images (small, commonly sent)
@@ -4533,6 +4653,18 @@ async function handleMessage(msg: WAMessage, backlog = false): Promise<void> {
         imagePath = path;
       } catch (err) {
         logDiag(`${LOG_PREFIX}: image download failed: ${err}\n`);
+        // FALL BACK TO AN ATTACHMENT, exactly as the voice branch below
+        // already does on its own failure. Without this the line persists as
+        // the bare "(image)" marker with no media fields at all: it renders
+        // as that raw marker instead of [photo], and download_attachment has
+        // no kind to act on - so the reader is told nothing arrived that they
+        // could fetch. The same rule was applied in one of the two eager
+        // branches and not the other.
+        attachment = {
+          kind: media.kind,
+          file_id: messageId,
+          ...(media.mime ? { mime: media.mime } : {}),
+        };
       }
     } else if (media.kind === "voice" || media.kind === "audio") {
       // Eager download + transcribe voice/audio messages

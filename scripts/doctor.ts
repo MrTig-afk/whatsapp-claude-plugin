@@ -641,15 +641,30 @@ function checkDiskUsage(): void {
     }
   }
 
+  // ONE rule for "how big is this file, if I can tell". Both readings below
+  // used a bare statSync, outside any try - unlike the inbox scan above, which
+  // guards every one. A file deleted between existsSync and statSync, an
+  // EACCES, a symlink to a vanished target, or diag.log replaced by a
+  // directory would throw straight out of checkDiskUsage.
+  const sizeOf = (p: string): number | null => {
+    try {
+      return statSync(p).size;
+    } catch {
+      return null;
+    }
+  };
+
   // diag.log — self-truncates at 20 MB (server.ts's DIAG_MAX_BYTES), but a
   // fast-filling log means something is repeatedly failing and the evidence
   // is about to be wiped by that reset.
   if (!existsSync(DIAG_LOG_FILE)) {
     report("INFO", "disk-usage", "diag.log does not exist yet");
   } else {
-    const bytes = statSync(DIAG_LOG_FILE).size;
-    const mb = bytesToMb(bytes);
-    if (bytes > DIAG_LOG_WARN_BYTES) {
+    const bytes = sizeOf(DIAG_LOG_FILE);
+    const mb = bytes === null ? "?" : bytesToMb(bytes);
+    if (bytes === null) {
+      report("WARN", "disk-usage", `could not read ${DIAG_LOG_FILE}`);
+    } else if (bytes > DIAG_LOG_WARN_BYTES) {
       report(
         "WARN",
         "disk-usage",
@@ -666,9 +681,11 @@ function checkDiskUsage(): void {
   if (!existsSync(LID_MAP_FILE)) {
     report("INFO", "disk-usage", "lid-map.json does not exist yet");
   } else {
-    const bytes = statSync(LID_MAP_FILE).size;
-    const mb = bytesToMb(bytes);
-    if (bytes > LID_MAP_WARN_BYTES) {
+    const bytes = sizeOf(LID_MAP_FILE);
+    const mb = bytes === null ? "?" : bytesToMb(bytes);
+    if (bytes === null) {
+      report("WARN", "disk-usage", `could not read ${LID_MAP_FILE}`);
+    } else if (bytes > LID_MAP_WARN_BYTES) {
       report(
         "WARN",
         "disk-usage",
@@ -686,18 +703,36 @@ function checkDiskUsage(): void {
 
 // ── main ────────────────────────────────────────────────────────────────
 
-checkEnv();
-if (checkStateDir()) {
-  checkAuth();
-  checkServer();
-  const acc = checkAccess();
-  checkActivity();
-  checkTranscription();
-  checkGroupConfigs(acc);
-  checkWatchdog();
-  checkDiskUsage();
+// THE REPORT IS PRINTED WHATEVER HAPPENS. `out` is only flushed at the very
+// end, so before this any throw anywhere in any check aborted the run and
+// printed NOTHING - no checks, no summary, just a stack trace. That is the
+// worst failure mode this file has: a diagnostic that dies silently on the
+// machine you are trying to diagnose, and it tells you less than running
+// nothing at all. The specific throw that prompted this is fixed above
+// (sizeOf), but the guard is here so the NEXT unguarded call cannot do it
+// again. The thrown error becomes an ERROR row, so it is in the report rather
+// than instead of it.
+try {
+  checkEnv();
+  if (checkStateDir()) {
+    checkAuth();
+    checkServer();
+    const acc = checkAccess();
+    checkActivity();
+    checkTranscription();
+    checkGroupConfigs(acc);
+    checkWatchdog();
+    checkDiskUsage();
+  }
+} catch (err) {
+  report(
+    "ERROR",
+    "doctor",
+    `a check stopped early: ${err}. Everything above still ran; everything below it did not.`,
+  );
+} finally {
+  out.push(
+    `SUMMARY: ${counts.ERROR} error, ${counts.WARN} warn, ${counts.INFO} info, ${counts.PASS} pass`,
+  );
+  console.log(out.join("\n"));
 }
-out.push(
-  `SUMMARY: ${counts.ERROR} error, ${counts.WARN} warn, ${counts.INFO} info, ${counts.PASS} pass`,
-);
-console.log(out.join("\n"));

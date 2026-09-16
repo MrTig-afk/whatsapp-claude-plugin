@@ -13,8 +13,12 @@ export type ViewableEntry = {
   /** false = kept for context only, was never addressed to the agent. */
   routed?: false;
   /** Media evidence, for the caption-less placeholder (see renderLogEntry).
-   *  An image sets image_path and NEVER attachment_kind - the server downloads
-   *  images eagerly and files everything else lazily - so both are consulted. */
+   *  `image_path` implies an image and is set only when the eager download
+   *  SUCCEEDED. `attachment_kind` may be present for an image too - on the
+   *  no-mention context path, on a backlog line, and when that eager download
+   *  failed - so both are consulted and mediaPlaceholder prefers image_path.
+   *  (This said "an image NEVER sets attachment_kind" until three paths were
+   *  added that do; an absolute in a comment outlives whatever made it true.) */
   image_path?: string;
   attachment_kind?: string;
 };
@@ -177,7 +181,7 @@ export const NOT_ADDRESSED = " (not addressed to Claude)";
  *  an upgrade - and formatChatCounts emits one row per line, so a newline in
  *  a stored subject forges an entire fake chat with a fake waiting count in
  *  the one view a session is told to trust at start-up. */
-function oneLine(s: string): string {
+export function oneLine(s: string): string {
   // ALL whitespace, not just CR/LF. safeName strips only < > [ ] ; CR LF,
   // so U+2028, U+2029, U+0085 and tabs survive it - on CURRENT lines, not
   // only pre-0.23.0 ones. U+2028 is a line terminator to many renderers and
@@ -305,6 +309,19 @@ export const AMBIGUOUS_LIST_LIMIT = 8;
  *  their text. No length can work, because a prefix shared by two chats is
  *  ambiguous at any length. Uniqueness is the only instrument, and it is
  *  applied right here. */
+/** The counts view clips a long name and ends it with an ellipsis, and that row
+ *  is the only handle a session gets - so the clipped form has to be accepted
+ *  back. Used by BOTH resolveChat (to match on it) and ambiguousChatMessage (to
+ *  echo the same string the matching actually used); a caller who pasted a
+ *  clipped row was otherwise told `"Long Name Trunc…" matches 3 chats` about a
+ *  value that was never what got matched. `|| want` is the guard, not a
+ *  tidy-up: a bare "…" strips to "" and the candidate filter asks
+ *  chatId.startsWith(asked), which is true for EVERY chat. */
+function deEllipsised(want: string): string {
+  const stripped = want.endsWith("…") ? want.slice(0, -1).trim() : want;
+  return stripped || want;
+}
+
 export function resolveChat(
   candidates: ChatRef[],
   want: string,
@@ -323,15 +340,32 @@ export function resolveChat(
       ? groupAnchor(chatId)
       : maskNumber(chatId)
     ).toLowerCase();
+  // THE CLIPPED NAME MUST BE ACCEPTED BACK, for the same reason the masked
+  // handle must. formatChatCounts clips a long name to `NAME_WIDTH` and ends
+  // it with an ellipsis, and the counts view is the ONLY handle a session
+  // gets - it deliberately carries no chat_id. So the row a caller was shown
+  // for a 35-character group subject matched nothing here and came back "no
+  // chat on record", about a chat that is on record with messages waiting.
+  // Dropping the ellipsis is enough: what remains is a genuine prefix of the
+  // full name, which nameMatches' substring arm already accepts. (The
+  // contrast with ranking.ts's clip() is real - those labels are safe to
+  // truncate because the picker selects by jid, not by label.)
+  // `|| want` IS THE GUARD, not a tidy-up. `chat="…"` strips to the empty
+  // string, and the candidate filter below asks `chatId.startsWith(asked)` -
+  // which is TRUE FOR EVERY CHAT when asked is "". On a log holding one chat
+  // that resolves to it and prints the whole thing, which is exactly the
+  // "never guess a chat" rule this function exists to hold. Falling back to
+  // the original leaves "…" matching nothing, and the caller says so.
+  const asked = deEllipsised(want);
   const hits = candidates.filter(
     (c) =>
-      nameMatches(c.name, c.chatId, want) ||
-      c.chatId.toLowerCase().startsWith(want) ||
-      maskedOf(c.chatId) === want,
+      nameMatches(c.name, c.chatId, asked) ||
+      c.chatId.toLowerCase().startsWith(asked) ||
+      maskedOf(c.chatId) === asked,
   );
   // A full jid wins outright: it is unique, so a caller who passed one has
   // already been unambiguous.
-  const exactJid = hits.find((c) => c.chatId.toLowerCase() === want);
+  const exactJid = hits.find((c) => c.chatId.toLowerCase() === asked);
   if (exactJid) return { ok: true, chat: exactJid };
   // A MASKED HANDLE IS NOT UNIQUE, so it only wins when exactly one chat
   // produces it. maskNumber keeps the last FOUR digits, and nameMatches says
@@ -341,7 +375,7 @@ export function resolveChat(
   // this file resolves chats at all: catch_up would render Alice's messages
   // under Alice's chat_id, and the reply meant for Bob goes to her. Falling
   // through re-asks instead, and the rows still differ by name.
-  const maskedHits = hits.filter((c) => maskedOf(c.chatId) === want);
+  const maskedHits = hits.filter((c) => maskedOf(c.chatId) === asked);
   if (maskedHits.length === 1) return { ok: true, chat: maskedHits[0] };
   if (hits.length === 1) return { ok: true, chat: hits[0] };
   return { ok: false, matches: hits };
@@ -353,7 +387,9 @@ export function resolveChat(
  *  chats, and it is what `reply` needs anyway. The group/DM marker is here
  *  because a group can be NAMED after a contact (F44), so the name alone does
  *  not tell them apart. */
-export function ambiguousChatMessage(want: string, matches: ChatRef[]): string {
+export function ambiguousChatMessage(raw: string, matches: ChatRef[]): string {
+  // Echo what was MATCHED ON, not what was typed - see deEllipsised.
+  const want = deEllipsised(raw);
   // CAPPED. Every row carries a raw jid - a phone number for a DM - and the
   // candidate rule is "any name substring or any id prefix", with no length
   // floor. So `chat="a"` is a perfectly plausible call (the counts view shows
@@ -436,8 +472,20 @@ export function formatChatCounts(chats: ChatCount[]): string {
   // the row-forging guards next to it already defend. The name itself is
   // clipped too, or the long row survives the cap it is meant to be under.
   const NAME_WIDTH = 32;
-  const clipName = (n: string) =>
-    n.length > NAME_WIDTH ? n.slice(0, NAME_WIDTH - 1) + "…" : n;
+  // Clipped by CODE POINT, not by code unit. `slice` cuts a surrogate pair in
+  // half when the 32nd unit is one, and the row a session is told to read at
+  // start-up then carries a lone surrogate that renders as U+FFFD. Same class
+  // of bug this branch fixed in chunk(); cosmetic here rather than corrupting,
+  // because the truncated handle still matches back through resolveChat, but
+  // an emoji in a group subject is not exotic. Alignment is still by code
+  // unit - see the ponytail note above; this fixes the mangling, not the
+  // arithmetic.
+  const clipName = (n: string) => {
+    const cps = Array.from(n);
+    return cps.length > NAME_WIDTH
+      ? cps.slice(0, NAME_WIDTH - 1).join("") + "…"
+      : n;
+  };
   const width = Math.min(
     NAME_WIDTH,
     Math.max(...listed.map((c) => c.name.length)),

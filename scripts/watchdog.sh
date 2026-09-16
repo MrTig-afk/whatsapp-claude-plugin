@@ -76,10 +76,18 @@ MSG_STALE_SECS=600            # 10 min unreplied message
 MSG_STALE_MAX_SECS=86400      # 24h; older than this is not a stuck session
 # Deliberately no INFO/report path for the >24h ones here, unlike doctor.ts,
 # which reports them separately so a long-dead session cannot hide behind a
-# PASS. The watchdog does not need it: a session dead that long is caught by
-# the one-way-silence checks below (INBOUND_STALE_SECS 6h -> alert,
-# INBOUND_RESTART_SECS 12h -> restart), both of which fire well before this
-# ceiling. Check 1 is the "stuck despite traffic" signal, not the liveness one.
+# PASS. Check 1 is the "stuck despite traffic" signal, not the liveness one;
+# liveness is the one-way-silence pair further down (INBOUND_STALE_SECS 6h ->
+# alert, INBOUND_RESTART_SECS 12h -> restart).
+#
+# WHAT THAT PAIR DOES NOT COVER, stated because this comment used to claim it
+# covered everything: inbound_silence is measured from max(last inbound,
+# inbound_baseline), and the baseline is REBASED on every restart and network
+# recovery. So immediately after a restart, a 25h-old unanswered message is
+# excluded from Check 1 by the ceiling above AND produces no silence alert for
+# a further 6h. The ceiling is still right - firing recovery every cycle for a
+# week over one unanswered message is worse - but the gap is real, and doctor
+# is where a long-dead session is meant to become visible.
 PENDING_STALE_MIN=15          # 15 min pending file untouched
 COOLDOWN_SECS=600             # don't nudge more than once per 10 min
 AUTH_ALERT_COOLDOWN_SECS=1800 # don't re-alert auth failure more than once per 30 min

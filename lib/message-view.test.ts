@@ -404,6 +404,64 @@ describe("formatChatCounts", () => {
   // substitutes characters and oneLine collapses whitespace, and neither
   // bounds length. One admin could pad every row of the session-start list to
   // whatever they liked.
+  // The counts view carries NO chat_id, so the row it prints is the only
+  // handle a session gets. Clipping the name without accepting the clipped
+  // form back made a long-named chat unreachable: the caller passes back
+  // exactly what it was shown and gets "no chat on record" about a chat that
+  // is on record with messages waiting. Pins the two functions together, the
+  // way the masked-handle test does.
+  // Stripping the ellipsis must not leave an EMPTY string: the candidate
+  // filter asks chatId.startsWith(asked), and startsWith("") is true for every
+  // chat - so `chat="…"` matched everything and, with one chat on record,
+  // resolved to it and printed the lot. That is the guess resolveChat exists
+  // to refuse.
+  test("a bare ellipsis matches nothing rather than everything", () => {
+    const only = { chatId: "120363111@g.us", name: "Only Chat" };
+    for (const arg of ["…", "  …", "…  "]) {
+      expect(resolveChat([only], arg)).toEqual({ ok: false, matches: [] });
+    }
+    // and the ordinary case still resolves
+    expect(resolveChat([only], "only")).toEqual({ ok: true, chat: only });
+  });
+
+  test("a clipped name from the counts list resolves back to its chat", () => {
+    const long = {
+      chatId: "120363111@g.us",
+      name: "Engineering Standup — Platform Team",
+    };
+    const other = { chatId: "61400001111@s.whatsapp.net", name: "Mum" };
+    const row = formatChatCounts([
+      { name: long.name, unreplied: 2, mentionGated: false },
+    ]);
+    const shown = row.trim(); // exactly what the session is handed
+    expect(shown).toContain("…"); // premise: this name is clipped
+    expect(shown).not.toBe(long.name);
+
+    const handle = shown
+      .replace(/\s+\d+$/, "")
+      .trim()
+      .toLowerCase();
+    expect(resolveChat([long, other], handle)).toEqual({
+      ok: true,
+      chat: long,
+    });
+  });
+
+  // The clip must not cut a surrogate pair in half - the row a session reads
+  // at start-up would carry a lone surrogate and render U+FFFD. Same class of
+  // bug this branch fixed in chunk().
+  test("clipping never splits a surrogate pair", () => {
+    const lone =
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    for (const n of [30, 31, 32, 33, 34]) {
+      const name = "A".repeat(n) + "\u{1F600}\u{1F600}";
+      const row = formatChatCounts([
+        { name, unreplied: 1, mentionGated: false },
+      ]);
+      expect(lone.test(row)).toBe(false);
+    }
+  });
+
   test("one absurd name cannot widen the whole list", () => {
     const out = formatChatCounts([
       chat({ name: "A".repeat(500), unreplied: 2 }),
