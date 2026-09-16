@@ -8,6 +8,7 @@ import {
   AMBIGUOUS_LIST_LIMIT,
   awaitingReply,
   catchUpWindow,
+  takeUnseen,
   type ChatCount,
   chatDisplayName,
   resolveChat,
@@ -1487,5 +1488,61 @@ describe("the masked handle the ambiguity list prints is accepted back", () => {
     expect(
       resolveChat([alice, solo], maskNumber(solo.chatId).toLowerCase()),
     ).toEqual({ ok: true, chat: solo });
+  });
+});
+
+describe("takeUnseen (wait_for_messages, one set per connection)", () => {
+  const m = (chat: string, id: string, ts = "2026-09-16T10:00:00.000Z") => ({
+    chat_id: chat,
+    id,
+    ts,
+  });
+  const a = m("a@s.whatsapp.net", "1");
+  const b = m("b@s.whatsapp.net", "2", "2026-09-16T10:00:01.000Z");
+
+  test("first call returns everything pending; the next only what is new", () => {
+    const seen = new Set<string>();
+    expect(takeUnseen(seen, [a])).toEqual([a]);
+    expect(takeUnseen(seen, [a])).toEqual([]);
+    // arrived BETWEEN calls (attempt 1 hid this forever)
+    expect(takeUnseen(seen, [a, b])).toEqual([b]);
+  });
+
+  test("two connections do not starve each other (attempt 2's regression)", () => {
+    const one = new Set<string>();
+    const two = new Set<string>();
+    expect(takeUnseen(one, [a])).toEqual([a]);
+    expect(takeUnseen(two, [a])).toEqual([a]);
+  });
+
+  test("a replied message leaves the set, and the same id in another chat is distinct", () => {
+    const seen = new Set<string>();
+    takeUnseen(seen, [a, b]);
+    takeUnseen(seen, [b]); // a was replied to
+    expect(seen.size).toBe(1);
+    expect(takeUnseen(seen, [b, m("c@s.whatsapp.net", "2")])).toHaveLength(1);
+  });
+
+  // Only what is HANDED is marked seen: a backlog wider than the cap is
+  // served newest-first across calls, never consumed unseen.
+  test("a limit hands the newest and leaves the rest for the next call", () => {
+    const seen = new Set<string>();
+    const many = Array.from({ length: 5 }, (_, i) =>
+      m("g@g.us", String(i), `2026-09-16T10:00:0${i}.000Z`),
+    );
+    const first = takeUnseen(seen, many, 3);
+    expect(first.map((x) => x.id)).toEqual(["2", "3", "4"]);
+    expect(seen.size).toBe(3);
+    expect(takeUnseen(seen, many, 3).map((x) => x.id)).toEqual(["0", "1"]);
+    expect(takeUnseen(seen, many, 3)).toEqual([]);
+  });
+
+  // getUnreplied returns [] on a failed read; that must not wipe the set.
+  test("an empty pending list prunes nothing", () => {
+    const seen = new Set<string>();
+    takeUnseen(seen, [a, b]);
+    expect(takeUnseen(seen, [])).toEqual([]);
+    expect(seen.size).toBe(2);
+    expect(takeUnseen(seen, [a, b])).toEqual([]);
   });
 });

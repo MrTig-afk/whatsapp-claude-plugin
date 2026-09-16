@@ -194,6 +194,42 @@ export function oneLine(s: string): string {
   return s.replace(/[\s\u0085]+/g, " ").trim();
 }
 
+/** wait_for_messages: which of `pending` has THIS CALLER not been handed yet.
+ *
+ *  `seen` belongs to one caller - one connection - and is the whole of the
+ *  design (w01-wait-for-messages-freshness): a per-CALL snapshot hid a
+ *  message that landed between two calls forever, and a per-PROCESS set let
+ *  one terminal's poll starve another's. A per-connection set is the level
+ *  between them. First call: `seen` is empty, everything pending is returned
+ *  (a fresh terminal is never starved). Later calls: only what arrived since.
+ *
+ *  At most `limit` are handed per call - the NEWEST `limit` - and only what
+ *  is handed is marked seen, so a backlog wider than the renderer's cap is
+ *  served across calls rather than consumed unseen. The set is pruned to
+ *  what is still pending, so a connection that lives for weeks holds no more
+ *  keys than there are unreplied messages; an EMPTY pending list prunes
+ *  nothing, because the reader returns [] on a failed read too, and one bad
+ *  tick must not re-serve the whole backlog. A key is chat_id + id: message
+ *  ids alone are not unique across chats.
+ *
+ *  NOT a high-water timestamp - WhatsApp stamps whole seconds, so two
+ *  messages in one second share one, and `>` drops the second while `>=`
+ *  re-serves the first forever. */
+export function takeUnseen<
+  T extends { chat_id: string; id: string; ts: string },
+>(seen: Set<string>, pending: T[], limit = Infinity): T[] {
+  if (pending.length === 0) return [];
+  const key = (m: T) => `${m.chat_id}\n${m.id}`;
+  const ordered = [...pending].sort(byTs);
+  const keys = ordered.map(key);
+  const live = new Set(keys);
+  for (const k of seen) if (!live.has(k)) seen.delete(k);
+  const fresh = ordered.filter((_, i) => !seen.has(keys[i]));
+  const handed = fresh.length > limit ? fresh.slice(-limit) : fresh;
+  for (const m of handed) seen.add(key(m));
+  return handed;
+}
+
 export function chatDisplayName(
   entries: { group_name?: string; direction?: "in" | "out"; user?: string }[],
   chatId: string,

@@ -75,6 +75,8 @@ if (!isStaticMode()) {
         "Remove the owner from the allowlist and permission requests go to your own chat, not to a stranger.",
         "The CLI and the server now agree on what your jid looks like, so `access set owner` sticks.",
         'Cron: the documented (cron: "expr") form now works, and 9/2 fires at 9, 11, 13 - not 0, 2, 4.',
+        "wait_for_messages now waits for what arrives AFTER the call, instead of returning the same backlog.",
+        "The first call on a connection still returns whatever is already waiting, so nothing is missed.",
       ],
     },
     {

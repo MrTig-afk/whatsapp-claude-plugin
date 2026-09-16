@@ -82,6 +82,7 @@ import {
   RECENT_LIMIT,
   renderLogEntry,
   resolveTtlMs,
+  takeUnseen,
 } from "./lib/message-view";
 import {
   displaySenderName,
@@ -592,6 +593,9 @@ function handleIpcConnection(socket: NetSocket, token: string): void {
   const buf = new LineBuffer();
   let authed = false;
   let preAuthBytes = 0;
+  // This connection's wait_for_messages "already handed" set. Dies with the
+  // closure, so a reconnecting secondary sees the backlog again by design.
+  const seen = new Set<string>();
   const drop = (why: string) => {
     logDiag(`${LOG_PREFIX}: ipc: dropped connection (${why})\n`);
     socket.destroy(); // destroy, not end: fail closed, no half-open socket
@@ -636,7 +640,7 @@ function handleIpcConnection(socket: NetSocket, token: string): void {
         // deliberately not the unreplied-suffix wrapper: the secondary adds
         // that itself from the shared message log, and doing it here too
         // would append it twice.
-        void handleToolCall({ params: { name, arguments: args } })
+        void handleToolCall({ params: { name, arguments: args } }, seen)
           .then((result) => {
             if (!socket.destroyed) {
               socket.write(encode({ type: "result", id, result }));
@@ -2384,22 +2388,21 @@ function markReplied(chat_id: string, onlyIds?: ReadonlySet<string>): void {
 // Re-reads the log every 2s while waiting, rather than being woken
 // in-process. Simpler, works whoever wrote the line, and costs at most 2s of
 // latency in a chat bridge. Wake on write if that ever matters.
-// KNOWN LIMITATION, deliberately left as-is for now (blocker
-// w01-wait-for-messages-freshness, task T11). R7's single horizon means an
-// unanswered inbound no longer ages out in 24h, so this returns instantly for
-// up to 30 days on a message nobody answers, and the tool's own advice is to
-// call it again straight away. The owner has decided it should wait for
-// messages that arrive AFTER the call. That change is NOT a patch here: it
-// needs a per-caller notion of "already seen", and handleToolCall carries no
-// caller identity on either entry point (direct, and the IPC relay at ~621
-// which has the socket but does not thread it through). Two simpler attempts
-// were made and both were wrong - see the blocker. Doing it properly means
-// touching the connection layer, which is a danger zone and not a thing to
-// rush.
-async function waitForUnreplied(maxMs: number): Promise<MessageLogEntry[]> {
+//
+// Returns what THIS CALLER has not been handed yet (T11, owner's design in
+// w01-wait-for-messages-freshness): the first call on a connection returns
+// whatever is unreplied, later calls only what arrived since. Without that,
+// R7's 7-day horizon made this return instantly, forever, on any message
+// nobody answered. `seen` is one set per connection - see handleToolCall.
+async function waitForUnreplied(
+  maxMs: number,
+  seen: Set<string>,
+): Promise<MessageLogEntry[]> {
   const deadline = Date.now() + maxMs;
   for (;;) {
-    const pending = getUnreplied();
+    // Capped HERE, not only in formatMessages: what is marked seen must be
+    // what is rendered, or a backlog past the cap is consumed unseen.
+    const pending = takeUnseen(seen, getUnreplied(), MAX_CATCH_UP_LIMIT);
     if (pending.length > 0) return pending;
     const remaining = deadline - Date.now();
     if (remaining <= 0) return [];
@@ -2411,10 +2414,10 @@ async function waitForUnreplied(maxMs: number): Promise<MessageLogEntry[]> {
  *  line aged out after 24h, so `unreplied` was self-limiting; the horizon is
  *  now 7 days, or up to 30 via WHATSAPP_MESSAGE_TTL_DAYS. An owner away a
  *  fortnight with a busy ungated group therefore had every waiting line
- *  rendered into a single tool result - and wait_for_messages returns the
- *  moment anything is unreplied (T11), so a polling session re-rendered that
- *  whole backlog on every call. Both readers route through here, so the cap
- *  lives here rather than at two call sites. NEWEST kept, oldest dropped, the
+ *  rendered into a single tool result. Both readers route through here:
+ *  `unreplied` relies on this cap, and wait_for_messages applies the same
+ *  number in takeUnseen so that what it marks handed is what is rendered.
+ *  NEWEST kept, oldest dropped, the
  *  way catch_up's window does it; the callers' "N unreplied message(s)" count
  *  is the true total either way.
  *
@@ -3293,7 +3296,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () =>
           {
             name: "wait_for_messages",
             description:
-              "Wait for the next inbound WhatsApp message, up to 40 seconds. Returns immediately if messages are already unreplied. Use this when you want to stay responsive without polling: call it, handle whatever it returns, call it again. It returns an empty result if nothing arrives in time, which is normal, not an error. (In Claude Code messages are also pushed into the session automatically, so this is mainly for other MCP clients.)",
+              "Wait up to 40 seconds for inbound WhatsApp messages this connection has not been handed yet. The first call returns whatever is already unreplied (newest 100); later calls return only what arrived since. Use this when you want to stay responsive without polling: call it, handle whatever it returns, call it again. It returns an empty result if nothing arrives in time, which is normal, not an error; a message is handed to a connection once, so if a result was lost, `unreplied` still lists everything outstanding. (In Claude Code messages are also pushed into the session automatically, so this is mainly for other MCP clients.)",
             inputSchema: { type: "object", properties: {} },
           },
           {
@@ -3359,9 +3362,17 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () =>
 // Wrapped below so every result carries the unreplied count: a client that
 // cannot be pushed to still learns there is traffic, on its next tool call,
 // whatever that call was.
-const handleToolCall = async (req: {
-  params: { name: string; arguments?: unknown };
-}): Promise<CallToolResult> => {
+// `seen` is wait_for_messages' "already handed to this caller" set, and A
+// CALLER IS ONE CONNECTION: the primary's own stdio has one set for the
+// process lifetime (stdioSeen), each secondary's IPC socket has one in its
+// connection closure and loses it with the socket. That identity is what both
+// earlier attempts lacked (see w01-wait-for-messages-freshness).
+const handleToolCall = async (
+  req: {
+    params: { name: string; arguments?: unknown };
+  },
+  seen: Set<string>,
+): Promise<CallToolResult> => {
   const args = (req.params.arguments ?? {}) as Record<string, unknown>;
   try {
     // A secondary runs no tool locally - it hands the call to the
@@ -3677,9 +3688,10 @@ const handleToolCall = async (req: {
         // and resetTimeoutOnProgress is off by default, so an over-long wait is
         // cancelled client-side rather than answered. The margin covers the
         // re-check tick and any client configured tighter than the default.
-        const arrived = await waitForUnreplied(40_000);
+        const arrived = await waitForUnreplied(40_000, seen);
+        // Not "new": the first call on a connection hands over the backlog.
         const text = arrived.length
-          ? `${arrived.length} unreplied message(s):\n\n${formatMessages(arrived)}`
+          ? `${arrived.length} unreplied message(s) not yet handed to this connection:\n\n${formatMessages(arrived)}`
           : "No new messages in the last 40 seconds. Call again to keep waiting.";
         return { content: [{ type: "text", text }] };
       }
@@ -3981,13 +3993,16 @@ const handleToolCall = async (req: {
   }
 };
 
+// The primary's own stdio connection is one wait_for_messages caller for the
+// life of the process - see handleToolCall.
+const stdioSeen = new Set<string>();
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   // No live connection and nothing to relay to — answer immediately
   // with today's stub text instead of letting the call queue on a dead
   // socket. Same shape the startup stub used to return (no isError, no
   // unreplied suffix), so nothing downstream changes.
   if (degraded()) return { content: [{ type: "text", text: conflictReason }] };
-  const result = await handleToolCall(req);
+  const result = await handleToolCall(req, stdioSeen);
   const pending = getUnreplied().length;
   const last = result.content?.[result.content.length - 1];
   // Not on the tools that just returned those very messages. The counts-only
@@ -3995,6 +4010,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   // directive to go call the full-text tool defeated the quiet list entirely.
   // Naming a chat is NOT excluded: there `pending` is the global figure, and a
   // session working chat-by-chat still wants telling about the others.
+  // wait_for_messages is NOT excluded either, since T11: it returns only what
+  // this connection has not been handed, so an empty result must still say
+  // that a backlog is waiting - a poll-only client has no other signal.
   const countsOnlyCatchUp =
     req.params.name === "catch_up" &&
     !String(
@@ -4003,7 +4021,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (
     pending > 0 &&
     last?.type === "text" &&
-    !["unreplied", "wait_for_messages"].includes(req.params.name) &&
+    req.params.name !== "unreplied" &&
     !countsOnlyCatchUp
   ) {
     last.text += `\n\n[${pending} unreplied WhatsApp message(s) waiting — call catch_up for the per-chat counts]`;
