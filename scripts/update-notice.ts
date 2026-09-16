@@ -57,6 +57,12 @@ if (!isStaticMode()) {
   // latest.
   const CHANGELOG: { version: string; notes: string[] }[] = [
     {
+      version: "0.23.2",
+      notes: [
+        "`catch_up` now includes `message_id` on attachment messages (voice notes, documents, audio), so you can call `download_attachment` even after a message has dropped out of the unreplied list.",
+      ],
+    },
+    {
       version: "0.23.1",
       notes: [
         "Documents you send (PDFs, markdown, spreadsheets, audio files) now arrive with their real file type. They used to be sent as a generic binary, which Android WhatsApp showed as an unopenable BIN file.",
