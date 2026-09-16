@@ -3387,7 +3387,9 @@ const handleToolCall = async (req: {
             const view = renderLogEntry(e, owner);
             const extras =
               (e.image_path ? ` (image: ${e.image_path})` : "") +
-              (e.attachment_kind ? ` (${e.attachment_kind} attachment)` : "");
+              (e.attachment_kind
+                ? ` (${e.attachment_kind} attachment, message_id=${e.id})`
+                : "");
             return `[${e.ts}] ${view.who}: ${view.text}${extras}`;
           });
           sections.push([header, ...lines].join("\n"));
