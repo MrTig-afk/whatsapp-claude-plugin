@@ -2389,10 +2389,9 @@ function markReplied(chat_id: string, onlyIds?: ReadonlySet<string>): void {
 // in-process. Simpler, works whoever wrote the line, and costs at most 2s of
 // latency in a chat bridge. Wake on write if that ever matters.
 //
-// Returns what THIS CALLER has not been handed yet (T11, owner's design in
-// w01-wait-for-messages-freshness): the first call on a connection returns
-// whatever is unreplied, later calls only what arrived since. Without that,
-// R7's 7-day horizon made this return instantly, forever, on any message
+// Returns what THIS CALLER has not been handed yet: the first call on a
+// connection returns whatever is unreplied, later calls only what arrived
+// since. Without that, the 7-day horizon made this return instantly, forever, on any message
 // nobody answered. `seen` is one set per connection - see handleToolCall.
 async function waitForUnreplied(
   maxMs: number,
@@ -3366,7 +3365,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () =>
 // CALLER IS ONE CONNECTION: the primary's own stdio has one set for the
 // process lifetime (stdioSeen), each secondary's IPC socket has one in its
 // connection closure and loses it with the socket. That identity is what both
-// earlier attempts lacked (see w01-wait-for-messages-freshness).
+// earlier attempts lacked (see takeUnseen in lib/message-view.ts).
 const handleToolCall = async (
   req: {
     params: { name: string; arguments?: unknown };
@@ -3765,7 +3764,7 @@ const handleToolCall = async (
         // an ambiguous `chat` asks which one is meant instead of printing
         // several rooms' full text - the owner's Q5 answer, and the only thing
         // that stops a private reply landing in a group an admin named after
-        // one of his contacts (F44). Resolved BEFORE the render loop because
+        // one of his contacts. Resolved BEFORE the render loop because
         // the answer depends on ALL chats, which a per-chat filter cannot see.
         let chosen: ChatRef | null = null;
         let ambiguous = "";
@@ -3855,7 +3854,7 @@ const handleToolCall = async (
           // unanswered mention was pruned but which still had ordinary chatter
           // counted as visible - while its `unreplied` was 0 by then, so it was
           // not in the list either. The miss was reported in NEITHER half:
-          // T04's feature failing at its own purpose (C2/F70). Now every chat
+          // the aged-out count failing at its own purpose. Now every chat
           // is in exactly one of the two, never neither.
           const visible = new Set(
             [...byChat]
@@ -4010,7 +4009,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   // directive to go call the full-text tool defeated the quiet list entirely.
   // Naming a chat is NOT excluded: there `pending` is the global figure, and a
   // session working chat-by-chat still wants telling about the others.
-  // wait_for_messages is NOT excluded either, since T11: it returns only what
+  // wait_for_messages is NOT excluded either: it returns only what
   // this connection has not been handed, so an empty result must still say
   // that a backlog is waiting - a poll-only client has no other signal.
   const countsOnlyCatchUp =

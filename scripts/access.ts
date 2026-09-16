@@ -500,9 +500,9 @@ const NO_SAVED_NAMES_NOTE =
 // This is the message a Remote Control, headless or piped session gets, and
 // there the reader has no window to have opened this from and no path to
 // guess - naming the route without naming the command left them stuck, which
-// is the hang spec R2 asks to replace with an exact instruction. The BARE
-// command, no `!` prefix (owner, 2026-09-05): the in-session `!` form is
-// Claude-Code-only and belongs to T19.
+// is the hang this replaces with an exact instruction. The BARE command, no
+// `!` prefix: the in-session `!` form is Claude-Code-only, and per-client
+// affordances are a separate piece of work.
 const NEEDS_TERMINAL =
   "The access screen needs a real terminal - stdin here is not one.\n" +
   "Run this in your own terminal window (not through a pipe, a script or an AI session):\n" +

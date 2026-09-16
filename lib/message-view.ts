@@ -197,7 +197,7 @@ export function oneLine(s: string): string {
 /** wait_for_messages: which of `pending` has THIS CALLER not been handed yet.
  *
  *  `seen` belongs to one caller - one connection - and is the whole of the
- *  design (w01-wait-for-messages-freshness): a per-CALL snapshot hid a
+ *  design, settled after two failed shapes: a per-CALL snapshot hid a
  *  message that landed between two calls forever, and a per-PROCESS set let
  *  one terminal's poll starve another's. A per-connection set is the level
  *  between them. First call: `seen` is empty, everything pending is returned
@@ -305,7 +305,7 @@ export function isFallbackName(name: string, chatId: string): boolean {
  *  So a fallback matches its whole self, or its trailing digits. maskNumber
  *  keeps four, which is specific enough not to be a wildcard, and it restores
  *  the only handle the row offers. Two contacts sharing those digits still
- *  collide - that is the ambiguity rule, and it belongs to T05. */
+ *  collide - that is the ambiguity rule, and resolveChat owns it. */
 export function nameMatches(
   name: string,
   chatId: string,
@@ -332,7 +332,7 @@ export const AMBIGUOUS_LIST_LIMIT = 8;
  *  This is the owner's own Q5 answer (2026-09-05): "ambiguous `chat` lists
  *  matches and asks". NEVER print several chat sections - that is the dump the
  *  counts view exists to prevent, and it is how a private reply ends up in a
- *  group an admin named after one of your contacts (F44).
+ *  group an admin named after one of your contacts.
  *
  *  An EXACT chat_id match wins outright even when it is also a prefix of
  *  another id, because a caller passing a full jid has already been unambiguous
@@ -433,7 +433,7 @@ export function resolveChat(
  *  the counts view deliberately omits - at the point the caller has to choose,
  *  the id is the only thing that actually distinguishes two identically-named
  *  chats, and it is what `reply` needs anyway. The group/DM marker is here
- *  because a group can be NAMED after a contact (F44), so the name alone does
+ *  because a group can be NAMED after a contact, so the name alone does
  *  not tell them apart. */
 export function ambiguousChatMessage(raw: string, matches: ChatRef[]): string {
   // Echo what was MATCHED ON, not what was typed - see deEllipsised.
@@ -502,7 +502,7 @@ export type ChatCount = {
  *  Returns "" when nothing is waiting; the caller decides what to say instead,
  *  because it also knows whether there are open tasks to show.
  *
- *  ponytail: aligns on `name.length`, i.e. UTF-16 code units, so a chat name
+ *  Known ceiling: aligns on `name.length`, i.e. UTF-16 code units, so a chat name
  *  with emoji or CJK drifts by a column or two. displayWidth() in
  *  scripts/picker.ts does this properly, but importing it here would drag a
  *  raw-mode TUI into a pure module. Move displayWidth into lib/ and use it if
@@ -618,20 +618,21 @@ export function updateAgedOut(
     // HANDLED SINCE THE MISS -> forget it. `handled` maps a chat key to the
     // newest surviving line in a chat that currently has NOTHING waiting.
     //
-    // This is the rule F59 named as correct and deferred as "more machinery
-    // than the imprecision it removes". That trade no longer holds: without it
+    // This is the rule an earlier review named as correct and deferred as
+    // "more machinery than the imprecision it removes". That trade no longer
+    // holds: without it
     // the key survives the full 30 days, so a chat whose miss aged out on day 8
     // and which the owner fully answered on day 9 announced "1 chat had
     // activity older than 7 days" at EVERY session start until day 38 - about a
     // chat that is completely read and completely answered.
     //
     // The comparison is against `at`, the moment the miss was RECORDED, and
-    // that is what makes this safe where F59's attempt was not. F59 cleared on
-    // "readable again", which is true almost immediately because a chat still
+    // that is what makes this safe where the first attempt was not. That one
+    // cleared on "readable again", which is true almost immediately because a chat still
     // holds older lines - so the record died on the very next tick and a real
     // miss was lost. Requiring a line NEWER THAN THE MISS means something
     // actually happened after it, and requiring nothing waiting means that
-    // something was dealt with. F59's own scenario stays recorded: its
+    // something was dealt with. The scenario that broke the first attempt stays recorded: its
     // surviving day-1 line is older than the day-7 record, so it clears
     // nothing.
     const newest = handled.get(key);
@@ -758,7 +759,7 @@ const MEDIA_PLACEHOLDER: Record<string, string> = {
  *  half blanked - exactly when catch_up is wanted (owner, 2026-08-28).
  *  keepLogLine is now the whole retention story.
  *
- *  A MEDIA MESSAGE WITH NO CAPTION IS STILL A MESSAGE (spec R5). Without a
+ *  A MEDIA MESSAGE WITH NO CAPTION IS STILL A MESSAGE. Without a
  *  placeholder it rendered as an empty line, so the count said one was waiting
  *  and the view appeared to show nothing - the count and the view have to
  *  agree. Both renderers take their text from here, so this is the one place

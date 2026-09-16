@@ -46,7 +46,7 @@ if [ "$has_phone" = false ]; then
 elif [ "$has_auth" = false ]; then
 	msg="WhatsApp phone number is configured but device is not paired yet.\n\nThe user needs to:\n1. Exit and launch: claude --dangerously-load-development-channels plugin:whatsapp-channel@whatsapp-claude-plugin\n2. The pairing code appears automatically in the session\n3. Enter it on phone: WhatsApp > Linked Devices > Link with phone number instead"
 elif [ "$has_contacts" = false ]; then
-	# The access screen is the normal route (spec R2); pairing stays because it
+	# The access screen is the normal route; pairing stays because it
 	# is the only route for someone who has never messaged this account.
 	# NO DOUBLE QUOTES IN THIS STRING. The three unconfigured branches are
 	# interpolated RAW into the heredoc's JSON below, so a quote here ends the

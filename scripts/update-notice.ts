@@ -288,7 +288,7 @@ if (!isStaticMode()) {
         `WhatsApp plugin updated to v${PLUGIN_VERSION}` +
           (lastSeen ? ` (from v${lastSeen})` : "") +
           `.\n\nWhat's new:\n` +
-          // A blank line between bullets (spec R6); the one-line-per-note
+          // A blank line between bullets; the one-line-per-note
           // rule that makes it readable is in AGENTS.md's version-bump ritual.
           notes.map((n) => `- ${n}`).join("\n\n"),
       );
