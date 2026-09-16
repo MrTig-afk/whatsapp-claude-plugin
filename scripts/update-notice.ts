@@ -57,6 +57,12 @@ if (!isStaticMode()) {
   // latest.
   const CHANGELOG: { version: string; notes: string[] }[] = [
     {
+      version: "0.24.0",
+      notes: [
+        "The message-key/proto store's FIFO cap (500 by default, shared across every chat) is now configurable with WHATSAPP_MAX_STORE, for high-volume accounts where download_attachment could hit \"Message not found in store\" for media that had not actually expired on WhatsApp's side - just evicted locally by this store. An invalid override (unset, non-numeric, fractional, zero, negative, or Infinity) falls back to the same 500 default rather than disabling eviction or breaking it.",
+      ],
+    },
+    {
       version: "0.23.2",
       notes: [
         "`catch_up` now includes `message_id` on attachment messages (voice notes, documents, audio), so you can call `download_attachment` even after a message has dropped out of the unreplied list.",
