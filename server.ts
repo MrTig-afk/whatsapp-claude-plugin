@@ -58,6 +58,7 @@ import {
 } from "./lib/mentions";
 import { cronMatches, parseCronSection } from "./lib/cron";
 import { extractMentions, extractText } from "./lib/inbound-message";
+import { parseMaxStore } from "./lib/max-store";
 import { logContainsId } from "./lib/message-log-probe";
 import { ownerStamp, parsePermissionReply } from "./lib/owner";
 import {
@@ -2233,8 +2234,10 @@ function ownerDisplayName(): string {
 // before its media actually expires on WhatsApp's side. Override with
 // WHATSAPP_MAX_STORE if the default is too small for your traffic; each
 // entry is just a message key + a small proto, so a much larger cap costs
-// negligible memory.
-const MAX_STORE = Number(process.env.WHATSAPP_MAX_STORE) || 500;
+// negligible memory. Parsing (and its validation) lives in ./lib/max-store,
+// split out for the same reason as the rest of ./lib: this file connects to
+// WhatsApp on import, so pure logic that needs unit coverage lives elsewhere.
+const MAX_STORE = parseMaxStore(process.env.WHATSAPP_MAX_STORE);
 const messageKeyStore = new Map<string, WAMessageKey>();
 const messageProtoStore = new Map<string, WAMessage>();
 
