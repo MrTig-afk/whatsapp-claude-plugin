@@ -18,7 +18,8 @@ const FIELDS: FieldSpec[] = [
   { name: "hour", min: 0, max: 23 },
   { name: "day-of-month", min: 1, max: 31 },
   { name: "month", min: 1, max: 12 },
-  { name: "day-of-week", min: 0, max: 6 },
+  // 7 is Sunday too, as in every crontab; cronMatches maps it.
+  { name: "day-of-week", min: 0, max: 7 },
 ];
 
 // `max` is not decoration: an out-of-range literal, a step wider than the
@@ -31,6 +32,7 @@ export function parseCronField(
   field: string,
   now: number,
   max: number,
+  min = 0,
 ): boolean {
   if (field === "*") return true;
   for (const part of field.split(",")) {
@@ -42,12 +44,21 @@ export function parseCronField(
       // the explicit (cron: "expr") form was accepted: a standard expression
       // validated clean, was reported as one healthy job, and then ran at the
       // wrong times with nothing to say so.
+      // `*` starts at the FIELD's minimum, not 0: day-of-month and month
+      // start at 1, so `*/2` there means 1,3,5… A range base (`9-17/2`)
+      // bounds both ends, the way crontab reads it.
       const [rawBase, rawStep] = part.split("/");
       const step = parseInt(rawStep);
       if (!Number.isFinite(step) || step < 1 || step > max) continue;
-      const base = rawBase === "*" ? 0 : parseInt(rawBase);
-      if (!Number.isFinite(base) || base < 0 || base > max) continue;
-      if (now >= base && (now - base) % step === 0) return true;
+      const [lo, hi] =
+        rawBase === "*"
+          ? [min, max]
+          : rawBase.includes("-")
+            ? rawBase.split("-").map(Number)
+            : [parseInt(rawBase), max];
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue;
+      if (lo < min || hi > max || lo > hi) continue;
+      if (now >= lo && now <= hi && (now - lo) % step === 0) return true;
     } else if (part.includes("-")) {
       const [lo, hi] = part.split("-").map(Number);
       if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi > max) continue;
@@ -67,12 +78,14 @@ export function cronMatches(expr: string, date: Date): boolean {
   // a TypeError out of the interval callback, taking the whole tick with it.
   if (parts.length !== FIELDS.length) return false;
   const [min, hr, dom, mon, dow] = parts;
+  const day = date.getDay();
   return (
     parseCronField(min, date.getMinutes(), 59) &&
     parseCronField(hr, date.getHours(), 23) &&
-    parseCronField(dom, date.getDate(), 31) &&
-    parseCronField(mon, date.getMonth() + 1, 12) &&
-    parseCronField(dow, date.getDay(), 6)
+    parseCronField(dom, date.getDate(), 31, 1) &&
+    parseCronField(mon, date.getMonth() + 1, 12, 1) &&
+    // Sunday is 0 AND 7, as in crontab: a Sunday matches either spelling.
+    (parseCronField(dow, day, 7) || (day === 0 && parseCronField(dow, 7, 7)))
   );
 }
 
@@ -81,14 +94,15 @@ function validateField(part: string, spec: FieldSpec): string | null {
   if (part === "*") return null;
   if (part.includes("/")) {
     const [base, rawStep] = part.split("/");
-    if (base !== "*" && !/^\d+$/.test(base))
-      return `${name} step base "${base}" is not a number or "*"`;
-    // RANGE-CHECKED like every other value. It was accepted as "a number" and
-    // never bounded, so "99/2" in an hour field passed validation and then
-    // behaved as "*/2" because parseCronField discarded the base entirely -
-    // valid-looking, reported healthy, firing at times nobody asked for.
-    if (base !== "*" && (Number(base) < min || Number(base) > max))
-      return `${name} step base ${base} is outside ${min}-${max}`;
+    // The base is a value or a range and is RANGE-CHECKED like one. It was
+    // accepted as "a number" and never bounded, so "99/2" in an hour field
+    // passed validation and then behaved as "*/2" because parseCronField
+    // discarded the base entirely - valid-looking, reported healthy, firing
+    // at times nobody asked for.
+    if (base !== "*") {
+      const err = validateField(base, spec);
+      if (err) return err;
+    }
     if (!/^\d+$/.test(rawStep))
       return `${name} step "${rawStep}" is not a number`;
     const step = Number(rawStep);
@@ -205,7 +219,7 @@ export function parseCronSection(content: string): CronParseResult {
     // wording because the user has to fix different halves of the line.
     if (candidates.length === 0) {
       errors.push(
-        `${line.trim()} → no schedule recognised; use "every N min", "daily 9am", "daily 09:00", or two times joined by "&"`,
+        `${line.trim()} → no schedule recognised; use "every N min", "daily 9am", "daily 09:00", two times joined by "&", or (cron: "m h dom mon dow")`,
       );
       continue;
     }

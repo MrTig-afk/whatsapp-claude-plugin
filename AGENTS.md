@@ -64,10 +64,15 @@ WhatsApp (phone) ←─ Baileys ─→ MCP Server (server.ts) ←─ stdio ─�
                             ├─ groups/<groupJid>/   (config.md = personality + cron,
                             │                        memory.md = conversation memory)
                             ├─ tasks.md   (agent-maintained open-task list, read by catch_up)
-                            └─ inbox/
+                            ├─ messages.jsonl   (inbound + owner/Claude context lines, pruned
+                            │                    hourly to WHATSAPP_MESSAGE_TTL_DAYS, default 7)
+                            ├─ sent.jsonl       (id + ts of the plugin's own sends, 24h)
+                            ├─ .aged-out-chats.json  (hashed chat_id -> when a WAITING line
+                            │                    was pruned; 30 days; never written in static mode)
+                            └─ inbox/     (attachments, pruned to the same horizon as messages.jsonl)
 ```
 
-- **`server.ts`** — the entire MCP server in one file (~1900 lines; re-check with
+- **`server.ts`** — the entire MCP server in one file (~5400 lines; re-check with
   `wc -l` rather than trusting this number). MCP tools exposed to Claude: `reply`,
   `react`, `download_attachment`, `edit_message`, `status`, `unreplied`, `catch_up`,
   `list_groups`.

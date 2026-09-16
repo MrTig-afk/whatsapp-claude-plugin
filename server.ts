@@ -1469,8 +1469,7 @@ async function ensureLidResolved(jid: string): Promise<void> {
  *  about what the same person's jid looks like. */
 function isAllowedJid(jid: string, allowList: string[]): boolean {
   if (allowList.length === 0) return false;
-  const canonical = (j: string) => jidNormalizedUser(resolveToPhone(j));
-  const phone = canonical(jid);
+  const phone = contactKey(jid);
   // AN EMPTY CANONICAL FORM MATCHES NOTHING. Measured against the vendored
   // rc.9: jidNormalizedUser returns "" for "", for undefined, AND for a bare
   // number with no domain - which is exactly the format
@@ -1482,7 +1481,7 @@ function isAllowedJid(jid: string, allowList: string[]): boolean {
   // introduced the possibility. Fails closed: an unparseable jid is not
   // allowed, it is refused.
   if (!phone) return false;
-  return allowList.some((entry) => canonical(entry) === phone);
+  return allowList.some((entry) => contactKey(entry) === phone);
 }
 
 // ─── Group name cache ─────────────────────────────────────────────────
@@ -2700,8 +2699,8 @@ function saveAgedOut(record: AgedOut): void {
   // static deployment writes no local state and cannot be made to by an env
   // var. This file is exactly the residue it opted out of - the ids are
   // hashed, but by design the record OUTLIVES the messages it describes, by
-  // up to 30 days. pruneMessageLog's hourly tick is registered
-  // unconditionally, so without this the file appears in static mode too.
+  // up to 30 days. becomePrimary registers pruneMessageLog's hourly tick in
+  // static mode too, so without this the file would appear there as well.
   if (STATIC) return;
   try {
     const tmp = AGED_OUT_FILE + ".tmp";
@@ -3175,6 +3174,14 @@ mcp.setNotificationHandler(
         });
         trackSent(sent.key);
       }
+    } else if (!owner) {
+      // Fail closed, but SAY SO: permissionTarget returns nothing when the
+      // stored owner was revoked and the linked account is not yet known
+      // (before the first `open`), or when the allowlist is empty. Silently
+      // dropping it leaves Claude Code waiting on an approval nobody was sent.
+      logDiag(
+        `permission_request ${request_id} not sent: no recipient (owner revoked and not connected yet, or empty allowlist)\n`,
+      );
     }
   },
 );
@@ -5181,7 +5188,8 @@ async function connectWhatsApp(): Promise<void> {
         // receives command previews and can approve them. A misdirected owner
         // is otherwise invisible — the agent just waits on approvals nobody
         // sees — and diag.log is the only forensic surface on an unattended
-        // host. `access status` prints the same jid interactively.
+        // host. `access status` shows the same state interactively, flagging
+        // a stored owner that has left the allowlist.
         const target = permissionTarget(access);
         logDiag(
           `${LOG_PREFIX}: permission requests go to ${target ? maskJid(target) : "nobody (no owner and an empty allowlist)"}\n`,

@@ -72,6 +72,9 @@ if (!isStaticMode()) {
         "`access set owner` now only accepts a contact you have allowlisted.",
         "A mistyped digit used to send every permission request, command text and all, to a stranger.",
         "`unreplied` and `wait_for_messages` now show the newest 100 and say how many more are waiting.",
+        "Remove the owner from the allowlist and permission requests go to your own chat, not to a stranger.",
+        "The CLI and the server now agree on what your jid looks like, so `access set owner` sticks.",
+        'Cron: the documented (cron: "expr") form now works, and 9/2 fires at 9, 11, 13 - not 0, 2, 4.',
       ],
     },
     {

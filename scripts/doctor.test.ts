@@ -367,7 +367,7 @@ describe("disk-usage", () => {
     writeSized(join(dir, "inbox", "a.jpg"), 500_000_001);
     const out = runDoctor(dir);
     expect(out).toContain("[WARN] disk-usage: inbox/ holds 1 file(s)");
-    expect(out).toContain("never been automatically pruned");
+    expect(out).toContain("prunes it hourly");
   });
 
   test("diag.log just at the WARN threshold → PASS", () => {

@@ -367,6 +367,18 @@ export function resolveChat(
   // already been unambiguous.
   const exactJid = hits.find((c) => c.chatId.toLowerCase() === asked);
   if (exactJid) return { ok: true, chat: exactJid };
+  // A NAME THAT REALLY ENDS IN AN ELLIPSIS wins when it is typed exactly.
+  // deEllipsised turns "Loading…" into "loading", and substring matching
+  // then also hits "Loading Screen Design" - so a chat whose real subject
+  // ends in "…" could never be named, not even by the exact row the counts
+  // view printed. ONLY the stripped case, and only the raw spelling: "mum"
+  // against "Mum" and "Mum's Group" stays ambiguous, as the tests below pin
+  // (ask, do not guess). Two chats sharing the exact name still fall through.
+  if (asked !== want) {
+    const raw = want.toLowerCase();
+    const exactName = hits.filter((c) => c.name.toLowerCase() === raw);
+    if (exactName.length === 1) return { ok: true, chat: exactName[0] };
+  }
   // A MASKED HANDLE IS NOT UNIQUE, so it only wins when exactly one chat
   // produces it. maskNumber keeps the last FOUR digits, and nameMatches says
   // so two functions up: "two contacts sharing those digits still collide -

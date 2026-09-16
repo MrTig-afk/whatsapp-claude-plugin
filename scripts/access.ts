@@ -268,10 +268,23 @@ function status(): void {
   // chat that receives command previews and can approve them, and a wrong one
   // is otherwise invisible - the agent just waits on approvals nobody sees.
   const owner = typeof a.owner === "string" ? a.owner : "";
+  // The same test the server applies on every read: a stored owner that has
+  // since left the allowlist is NOT where requests go any more (they go to
+  // the linked account), and printing it bare had the user waiting on the
+  // wrong chat.
+  const lidMap = loadLidMap();
+  const ownerKey = contactKeyFor(lidMap, owner);
+  const ownerAllowed =
+    !!owner && a.allowFrom.some((j) => contactKeyFor(lidMap, j) === ownerKey);
+  const ownerNote = !owner
+    ? "  (unstamped — falling back to allowFrom[0])"
+    : ownerAllowed
+      ? ""
+      : "  (NO LONGER ALLOWLISTED — requests go to your own chat until you set a new one)";
   const lines = [
     `state dir:  ${STATE_DIR}`,
     `dmPolicy:   ${a.dmPolicy}`,
-    `owner:      ${owner || a.allowFrom[0] || "(none)"}${owner ? "" : "  (unstamped — falling back to allowFrom[0])"}`,
+    `owner:      ${owner || a.allowFrom[0] || "(none)"}${ownerNote}`,
     `            permission requests go here; change with "set owner <jid>"`,
     `allowFrom:  ${a.allowFrom.length} contact(s)`,
     ...a.allowFrom.map((jid) => `  - ${jid}`),
@@ -1078,14 +1091,20 @@ function set(key: string, rawValue: string): void {
     // in the first place.
     const lidMap = loadLidMap();
     const wanted = contactKeyFor(lidMap, rawValue);
-    const allowed =
-      rawValue.includes("@") &&
-      a.allowFrom.some((j) => contactKeyFor(lidMap, j) === wanted);
-    if (!allowed) {
+    const match = rawValue.includes("@")
+      ? a.allowFrom.find((j) => contactKeyFor(lidMap, j) === wanted)
+      : undefined;
+    if (!match) {
       die(
         "owner must be the JID of an allowlisted contact, e.g. 886912345678@s.whatsapp.net.\nRun status to see the current owner and the allowlist; allow them first if they are not on it.",
       );
     }
+    // STORE THE ALLOWLIST'S OWN SPELLING, not what was typed. The check above
+    // is normalised, so a `:device` or `@lid` form passes it - and stored raw,
+    // the server would address every permission request to that literal
+    // (a single stale device, or an alias the lid map may later forget), and
+    // `remove` would not find it by exact string.
+    value = match;
   }
   a[key] = value;
   save(a);

@@ -424,6 +424,20 @@ describe("formatChatCounts", () => {
     expect(resolveChat([only], "only")).toEqual({ ok: true, chat: only });
   });
 
+  // Stripping the ellipsis must not make a chat whose REAL name ends in one
+  // unreachable: "loading…" also substring-matches "Loading Screen Design",
+  // so without an exact-name tie-breaker the exact row was ambiguous forever.
+  test("a real name ending in an ellipsis still resolves exactly", () => {
+    const dots = { chatId: "120363111@g.us", name: "Loading…" };
+    const longer = { chatId: "120363222@g.us", name: "Loading Screen Design" };
+    expect(resolveChat([dots, longer], "loading…")).toEqual({
+      ok: true,
+      chat: dots,
+    });
+    // and a genuine substring is still ambiguous
+    expect(resolveChat([dots, longer], "load").ok).toBe(false);
+  });
+
   test("a clipped name from the counts list resolves back to its chat", () => {
     const long = {
       chatId: "120363111@g.us",

@@ -48,6 +48,22 @@ describe("parseCronField", () => {
     expect(parseCronField("*/2", 2, 23)).toBe(true);
   });
 
+  // `*` starts at the field's MINIMUM: day-of-month and month start at 1, so
+  // "*/2" there is 1,3,5… - not the even days a zero base produced.
+  test("a wildcard step starts at the field minimum", () => {
+    expect(parseCronField("*/2", 1, 31, 1)).toBe(true);
+    expect(parseCronField("*/2", 2, 31, 1)).toBe(false);
+    expect(parseCronField("*/3", 1, 12, 1)).toBe(true); // Jan, Apr, Jul, Oct
+    expect(parseCronField("*/3", 3, 12, 1)).toBe(false);
+  });
+
+  test("a range base bounds both ends of a step", () => {
+    expect(parseCronField("9-17/2", 9, 23)).toBe(true);
+    expect(parseCronField("9-17/2", 17, 23)).toBe(true);
+    expect(parseCronField("9-17/2", 19, 23)).toBe(false);
+    expect(parseCronField("9-17/2", 10, 23)).toBe(false);
+  });
+
   test("an out-of-range literal never matches", () => {
     expect(parseCronField("70", 70, 59)).toBe(false);
     expect(parseCronField("25", 25, 23)).toBe(false);
@@ -94,8 +110,32 @@ describe("validateCronExpr", () => {
   // The base was checked for being numeric and never range-checked, so this
   // validated clean and then behaved as "*/2" because the base was discarded.
   test("rejects a step base outside the field range", () => {
-    expect(validateCronExpr("0 99/2 * * *")).toMatch(/step base 99/);
+    expect(validateCronExpr("0 99/2 * * *")).toMatch(/hour 99 is outside/);
     expect(validateCronExpr("0 9/2 * * *")).toBeNull();
+  });
+
+  // The standard crontab spellings the banner invites: a range with a step,
+  // and Sunday as 7.
+  test("accepts range-with-step and day-of-week 7", () => {
+    expect(validateCronExpr("0 9-17/2 * * 1-5")).toBeNull();
+    expect(validateCronExpr("0 9 * * 7")).toBeNull();
+    expect(validateCronExpr("0 9 * * 8")).toMatch(/day-of-week 8/);
+    expect(validateCronExpr("0 9-25/2 * * *")).toMatch(/hour range/);
+  });
+});
+
+describe("cronMatches with crontab spellings", () => {
+  // 2026-09-06 is a Sunday; 2026-09-01 is a Tuesday.
+  const sunday = new Date(2026, 8, 6, 9, 0);
+  test("Sunday matches both 0 and 7", () => {
+    expect(cronMatches("0 9 * * 0", sunday)).toBe(true);
+    expect(cronMatches("0 9 * * 7", sunday)).toBe(true);
+    expect(cronMatches("0 9 * * 5-7", sunday)).toBe(true);
+    expect(cronMatches("0 9 * * 1-6", sunday)).toBe(false);
+  });
+  test("a day-of-month step counts from the 1st", () => {
+    expect(cronMatches("0 9 */2 * *", new Date(2026, 8, 1, 9, 0))).toBe(true);
+    expect(cronMatches("0 9 */2 * *", new Date(2026, 8, 2, 9, 0))).toBe(false);
   });
 });
 

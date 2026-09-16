@@ -48,10 +48,9 @@ const MSG_STALE_SECS = 600; // mirrors scripts/watchdog.sh MSG_STALE_SECS
 // stuck", so it stops counting toward the stuck-session warning. See the
 // windowed test in checkActivity.
 const MSG_STALE_MAX_SECS = 24 * 60 * 60;
-// inbox/ has historically had no automatic pruning at all — every downloaded
-// image/voice note from every allowed chat accumulates forever. A few MB per
-// attachment means steady moderate use stays well under this; crossing it
-// signals real risk of eating the disk unnoticed.
+// inbox/ is pruned hourly by the running primary to the message horizon, so
+// at the default 7 days steady moderate use stays well under this; crossing
+// it means a long horizon, a burst of large files, or no primary running.
 const INBOX_WARN_BYTES = 500_000_000; // 500 MB
 // Half of server.ts's own DIAG_MAX_BYTES (20 MB) self-truncation cap — past
 // this point diag.log is filling fast enough to hit that reset soon, which
@@ -597,7 +596,8 @@ function bytesToMb(bytes: number): string {
 }
 
 function checkDiskUsage(): void {
-  // inbox/ — every downloaded attachment, no automatic pruning at all.
+  // inbox/ — pruned by the primary (pruneInbox) while one runs. The threshold
+  // assumes the default 7-day horizon; doctor cannot see the lock holder's TTL.
   if (!existsSync(INBOX_DIR)) {
     report(
       "INFO",
@@ -629,10 +629,10 @@ function checkDiskUsage(): void {
         report(
           "WARN",
           "disk-usage",
-          `inbox/ holds ${fileCount} file(s), ${mb} MB — it has never been automatically pruned and can grow without bound`,
+          `inbox/ holds ${fileCount} file(s), ${mb} MB — a running primary prunes it hourly to the message horizon (7 days unless WHATSAPP_MESSAGE_TTL_DAYS says otherwise); this threshold assumes that default, and nothing prunes while no server runs`,
           {
             kind: "manual",
-            text: `Review and clear old attachments you no longer need, e.g.: find ${INBOX_DIR} -type f -mtime +7 -delete`,
+            text: `Restart the lock-holding terminal with a lower WHATSAPP_MESSAGE_TTL_DAYS (it is read at startup), or clear attachments you no longer need, e.g.: find ${INBOX_DIR} -type f -mtime +7 -delete`,
           },
         );
       } else {
