@@ -57,6 +57,12 @@ if (!isStaticMode()) {
   // latest.
   const CHANGELOG: { version: string; notes: string[] }[] = [
     {
+      version: "0.24.1",
+      notes: [
+        "Bold text (**like this**) sent to WhatsApp was coming out italic instead - the markdown conversion ran its bold and italic rules in an order where the italic rule immediately re-matched and undid every bold span. Bold now renders as bold.",
+      ],
+    },
+    {
       version: "0.24.0",
       notes: [
         "The message-key/proto store's FIFO cap (500 by default, shared across every chat) is now configurable with WHATSAPP_MAX_STORE, for high-volume accounts where download_attachment could hit \"Message not found in store\" for media that had not actually expired on WhatsApp's side - just evicted locally by this store. An invalid override (unset, non-numeric, fractional, zero, negative, or Infinity) falls back to the same 500 default rather than disabling eviction or breaking it.",
