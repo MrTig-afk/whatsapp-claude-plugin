@@ -2092,13 +2092,21 @@ function markdownToWhatsApp(text: string): string {
   // Headers → bold
   result = result.replace(/^#{1,6}\s+(.+)$/gm, "*$1*");
 
+  // Italic: *text* (single) or _text_ → _text_
+  // Only match single * not preceded/followed by * (to avoid conflicts with bold)
+  //
+  // Runs BEFORE the bold rules on purpose. Bold rewrites **text** into
+  // WhatsApp's *text*, and this pattern matches that output just as readily
+  // as a genuine italic span — so with bold first, every **bold** came out
+  // as _italic_ and no input could produce bold at all. A **bold** span
+  // cannot match this rule (its asterisks are adjacent, failing both
+  // lookarounds), so italic-first leaves bold input untouched and converts
+  // only real italics.
+  result = result.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "_$1_");
+
   // Bold: **text** or __text__ → *text*
   result = result.replace(/\*\*(.+?)\*\*/g, "*$1*");
   result = result.replace(/__(.+?)__/g, "*$1*");
-
-  // Italic: *text* (single) or _text_ → _text_
-  // Only match single * not preceded/followed by * (to avoid conflicts with bold)
-  result = result.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "_$1_");
 
   // Strikethrough: ~~text~~ → ~text~
   result = result.replace(/~~(.+?)~~/g, "~$1~");
