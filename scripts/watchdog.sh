@@ -65,7 +65,7 @@ RESTART_SCRIPT="$HOME/start-whatsapp-agent.sh"
 LOCK_FILE="$STATE_DIR/.server.lock"
 
 # Thresholds — only nudge if things are really stuck
-MSG_STALE_SECS=600            # 10 min unreplied message
+MSG_STALE_SECS=600 # 10 min unreplied message
 # Ceiling on the same window. Past this an unreplied line means "nobody
 # answered", not "the session is stuck". Before 0.25.0 an unanswered inbound
 # aged out of the log after 24h, so Check 1 was self-limiting; with one 7-day
@@ -73,7 +73,7 @@ MSG_STALE_SECS=600            # 10 min unreplied message
 # replies to would otherwise make the watchdog declare the session stuck and
 # fire recovery on every cycle for a week. Mirrors MSG_STALE_MAX_SECS in
 # scripts/doctor.ts.
-MSG_STALE_MAX_SECS=86400      # 24h; older than this is not a stuck session
+MSG_STALE_MAX_SECS=86400 # 24h; older than this is not a stuck session
 # Deliberately no INFO/report path for the >24h ones here, unlike doctor.ts,
 # which reports them separately so a long-dead session cannot hide behind a
 # PASS. Check 1 is the "stuck despite traffic" signal, not the liveness one;
