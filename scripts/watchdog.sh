@@ -67,7 +67,7 @@ LOCK_FILE="$STATE_DIR/.server.lock"
 # Thresholds — only nudge if things are really stuck
 MSG_STALE_SECS=600            # 10 min unreplied message
 # Ceiling on the same window. Past this an unreplied line means "nobody
-# answered", not "the session is stuck". Before 0.24.0 an unanswered inbound
+# answered", not "the session is stuck". Before 0.25.0 an unanswered inbound
 # aged out of the log after 24h, so Check 1 was self-limiting; with one 7-day
 # horizon (30 with WHATSAPP_MESSAGE_TTL_DAYS) a single message nobody ever
 # replies to would otherwise make the watchdog declare the session stuck and

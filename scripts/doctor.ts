@@ -406,7 +406,7 @@ function checkActivity(): void {
         // inbound-default mirrors the server's catch_up logic
         lastIn = Math.max(lastIn ?? 0, t);
         // Split, not filtered. The 24h inbound expiry that used to retire
-        // these lines is gone (one 7-day horizon, 0.24.0), so without an upper
+        // these lines is gone (one 7-day horizon, 0.25.0), so without an upper
         // bound a single never-answered message would report a stuck session
         // on every run for a week. But DROPPING the old ones is its own bug:
         // a session dead for two days with no new traffic would then report

@@ -204,7 +204,7 @@ describe("activity", () => {
   });
   test("an unreplied message older than a day no longer cries wolf", () => {
     // The 24h inbound expiry used to retire these lines; one 7-day horizon
-    // (0.24.0) does not. Without a ceiling on the window, a single message
+    // (0.25.0) does not. Without a ceiling on the window, a single message
     // nobody ever answered would report a possibly-stuck agent session on
     // every doctor run for a week.
     const dir = freshStateDir();

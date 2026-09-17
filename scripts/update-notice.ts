@@ -57,7 +57,7 @@ if (!isStaticMode()) {
   // latest.
   const CHANGELOG: { version: string; notes: string[] }[] = [
     {
-      version: "0.24.0",
+      version: "0.25.0",
       notes: [
         "If you copied the permissions block from USAGE.md, copy it again - its ids were wrong until now.",
         "That includes if you re-copied it after the 0.23.0 note, which pointed at the same wrong block.",
@@ -77,6 +77,28 @@ if (!isStaticMode()) {
         'Cron: the documented (cron: "expr") form now works, and 9/2 fires at 9, 11, 13 - not 0, 2, 4.',
         "wait_for_messages now waits for what arrives AFTER the call, instead of returning the same backlog.",
         "The first call on a connection still returns whatever is already waiting, so nothing is missed.",
+        "A markdown heading in a reply now arrives bold, not italic, and `a * b * c` stays plain.",
+      ],
+    },
+    {
+      version: "0.24.1",
+      notes: [
+        "**Bold** in a reply was arriving as italic: the italic rule re-matched what the bold rule made.",
+        "Bold now renders as bold.",
+      ],
+    },
+    {
+      version: "0.24.0",
+      notes: [
+        "The in-memory message store (500 entries, shared across chats) is now sized by WHATSAPP_MAX_STORE.",
+        'Raise it if download_attachment says "Message not found in store" on a busy account.',
+        "Anything that is not a positive whole number falls back to 500.",
+      ],
+    },
+    {
+      version: "0.23.2",
+      notes: [
+        "`unreplied` now prints message_id on voice notes, documents and audio, for download_attachment.",
       ],
     },
     {
@@ -128,7 +150,7 @@ if (!isStaticMode()) {
         "catch_up keeps the last 5 messages from each side of a chat rather than 15 in total.",
         "A message that did not mention Claude in a mention-gated group is now kept as context, text only.",
         "It is never routed, never notified and never counted as unreplied.",
-        "Context lines are kept for 7 days. (0.24.0 made that one horizon for every line.)",
+        "Context lines are kept for 7 days. (0.25.0 made that one horizon for every line.)",
         "The backlog WhatsApp delivers when the plugin reconnects is now logged too, and never acted on.",
         "catch_up takes an optional `chat`, so a session can pull one room instead of dumping every chat.",
         "Your saved contact names now fill in by themselves, and survive a restart.",

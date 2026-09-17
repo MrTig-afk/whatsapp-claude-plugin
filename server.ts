@@ -58,6 +58,7 @@ import {
 } from "./lib/mentions";
 import { cronMatches, parseCronSection } from "./lib/cron";
 import { extractMentions, extractText } from "./lib/inbound-message";
+import { parseMaxStore } from "./lib/max-store";
 import { logContainsId } from "./lib/message-log-probe";
 import { ownerStamp, parsePermissionReply } from "./lib/owner";
 import {
@@ -2149,16 +2150,25 @@ function markdownToWhatsApp(text: string): string {
     return `\x00IC${inlineCode.length - 1}\x00`;
   });
 
+  // Italic: *text* (single) or _text_ → _text_
+  // Only match single * not preceded/followed by * (to avoid conflicts with bold)
+  //
+  // Runs BEFORE the bold and header rules on purpose. Both of those emit
+  // WhatsApp's *text*, and this pattern matches that output just as readily
+  // as a genuine italic span — so with bold first, every **bold** came out
+  // as _italic_, and with headers first every heading did. A **bold** span
+  // cannot match this rule (its asterisks are adjacent, failing both
+  // lookarounds), so italic-first leaves bold input untouched and converts
+  // only real italics. The inner lookarounds also refuse a space next to
+  // either asterisk, so `a * b * c` stays plain text.
+  result = result.replace(/(?<!\*)\*(?![\s*])(.+?)(?<![\s*])\*(?!\*)/g, "_$1_");
+
   // Headers → bold
   result = result.replace(/^#{1,6}\s+(.+)$/gm, "*$1*");
 
   // Bold: **text** or __text__ → *text*
   result = result.replace(/\*\*(.+?)\*\*/g, "*$1*");
   result = result.replace(/__(.+?)__/g, "*$1*");
-
-  // Italic: *text* (single) or _text_ → _text_
-  // Only match single * not preceded/followed by * (to avoid conflicts with bold)
-  result = result.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "_$1_");
 
   // Strikethrough: ~~text~~ → ~text~
   result = result.replace(/~~(.+?)~~/g, "~$1~");
@@ -2288,7 +2298,16 @@ function ownerDisplayName(): string {
 
 // ─── Message stores (bounded) ──────────────────────────────────────────
 
-const MAX_STORE = 500;
+// Shared across every chat, FIFO. A high-volume account (many active groups,
+// hundreds of unread messages) can churn through 500 entries in minutes, so a
+// message can hit "Message not found in store" on download_attachment well
+// before its media actually expires on WhatsApp's side. Override with
+// WHATSAPP_MAX_STORE if the default is too small for your traffic; each
+// entry is just a message key + a small proto, so a much larger cap costs
+// negligible memory. Parsing (and its validation) lives in ./lib/max-store,
+// split out for the same reason as the rest of ./lib: this file connects to
+// WhatsApp on import, so pure logic that needs unit coverage lives elsewhere.
+const MAX_STORE = parseMaxStore(process.env.WHATSAPP_MAX_STORE);
 const messageKeyStore = new Map<string, WAMessageKey>();
 const messageProtoStore = new Map<string, WAMessage>();
 
@@ -3821,7 +3840,9 @@ const handleToolCall = async (
             const view = renderLogEntry(e, owner);
             const extras =
               (e.image_path ? ` (image: ${e.image_path})` : "") +
-              (e.attachment_kind ? ` (${e.attachment_kind} attachment)` : "");
+              (e.attachment_kind
+                ? ` (${e.attachment_kind} attachment, message_id=${e.id})`
+                : "");
             return `[${e.ts}] ${view.who}: ${view.text}${extras}`;
           });
           sections.push([header, ...lines].join("\n"));
