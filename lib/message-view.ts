@@ -188,10 +188,10 @@ export function oneLine(s: string): string {
   // a tab silently breaks the padEnd column alignment, so either one lets a
   // peer-set group subject forge a row in the counts list.
   //
-  // U+0085 (NEL) is listed EXPLICITLY because JavaScript's \s does not
-  // match it - measured, not assumed: /\s/ is false for U+0085 and true for
-  // U+2028, U+2029, U+00A0 and tab.
-  return s.replace(/[\s\u0085]+/g, " ").trim();
+  // \p{Cc} adds every CONTROL character - ESC (terminal colour codes), NUL,
+  // DEL, and U+0085 (NEL), which JavaScript's \s does not match. Not \p{Cf}:
+  // that holds the zero-width joiner that glues family emoji together.
+  return s.replace(/[\s\p{Cc}]+/gu, " ").trim();
 }
 
 /** wait_for_messages: which of `pending` has THIS CALLER not been handed yet.
@@ -323,8 +323,8 @@ export function nameMatches(
 export type ChatRef = { chatId: string; name: string };
 
 /** How many candidate chats an ambiguity message lists before it just counts
- *  the rest. Each row carries a raw jid, so this bounds number exposure as
- *  well as bulk - see ambiguousChatMessage. */
+ *  the rest. Rows are masked (a DM shows its last four digits), so this now
+ *  bounds bulk, not number exposure - see ambiguousChatMessage. */
 export const AMBIGUOUS_LIST_LIMIT = 8;
 
 /** Resolve a `chat` argument to exactly one chat, or report the ambiguity.
@@ -441,14 +441,11 @@ export function resolveChat(
 export function ambiguousChatMessage(raw: string, matches: ChatRef[]): string {
   // Echo what was MATCHED ON, not what was typed - see deEllipsised.
   const want = deEllipsised(raw);
-  // CAPPED. Every row carries a raw jid - a phone number for a DM - and the
-  // candidate rule is "any name substring or any id prefix", with no length
-  // floor. So `chat="a"` is a perfectly plausible call (the counts view shows
-  // names only, and the tool description invites "part of a name") and it
-  // would otherwise print one unmasked number per matching chat, in the very
-  // session-start flow this work exists to stop dumping. Showing a handful is
-  // enough to disambiguate or to prove the argument was too vague; the rest
-  // are counted, not listed.
+  // CAPPED. The candidate rule is "any name substring or any id prefix", with
+  // no length floor, so `chat="a"` is a perfectly plausible call (the tool
+  // description invites "part of a name") and can match every chat on
+  // record. Showing a handful is enough to disambiguate or to prove the
+  // argument was too vague; the rest are counted, not listed.
   // NEVER A RAW NUMBER (owner, 2026-09-08, and scripts/mask.ts's own header,
   // which names "a disambiguation prompt" as a case that must render masked).
   // A group jid is not a phone number, so groupAnchor leaves it intact and it
@@ -591,22 +588,11 @@ export function agedOutKey(chatId: string): string {
  *
  *  A chat you FULLY HANDLED never gets here: nothing it lost was unreplied.
  *
- *  NOTHING CLEARS A KEY EARLY, and that is deliberate after two attempts that
- *  each lost a real miss:
- *
- *  - Clearing when the chat is "readable again" erases the record on the very
- *    next tick, because a chat almost always still holds lines for the hour
- *    after one of its unanswered lines is pruned. The miss is then gone from
- *    the counts AND from this record - the feature failing at its one job.
- *  - Distinguishing "came back and was handled" from "still holds older
- *    lines" needs a per-chat newest-surviving-timestamp compared against the
- *    recorded time. That is a correct rule and it is more machinery than the
- *    imprecision it removes.
- *
- *  So a chat that was missed, then talked to and fully answered, can still be
- *  counted once more when its lines finally age out. That over-reports by one
- *  line of text, bounded by the 30-day expiry. Losing a genuine miss is the
- *  worse failure of the two, and this direction cannot do it.
+ *  A key is cleared early in ONE case only: the chat has nothing waiting AND
+ *  holds a line newer than the miss (`handled`, below). Clearing merely
+ *  because the chat is "readable again" was tried and lost real misses - a
+ *  chat almost always still holds older lines for the hour after one of its
+ *  unanswered lines is pruned. Otherwise a key lives out the 30-day expiry.
  *
  *  Ids are stored hashed - see `agedOutKey`.  */
 export function updateAgedOut(
@@ -650,8 +636,9 @@ export function updateAgedOut(
  *
  *  A chat still holding lines is not missing - it is in the counts list, or it
  *  has nothing waiting - so it must not also be reported as aged out. Without
- *  this the same chat appears in both halves of one session-start output for
- *  up to an hour, until the next prune tick corrects the record. */
+ *  this a chat with something waiting would appear in both halves of one
+ *  session-start output until it is answered, or for the full 30-day expiry -
+ *  a prune tick clears the record only once the chat is handled. */
 export function countAgedOut(
   record: AgedOut,
   visibleKeys: ReadonlySet<string>,

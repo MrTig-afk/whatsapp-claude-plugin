@@ -6,6 +6,7 @@ import {
   agedOutLine,
   ambiguousChatMessage,
   AMBIGUOUS_LIST_LIMIT,
+  oneLine,
   awaitingReply,
   catchUpWindow,
   takeUnseen,
@@ -982,6 +983,11 @@ describe("oneLine collapses every kind of whitespace", () => {
       );
       expect(out).toBe("Family Fake Chat @9");
     }
+  });
+
+  test("control characters go too; emoji joiners stay", () => {
+    expect(oneLine("Fam\x1b[31mily\x00\x7f")).toBe("Fam [31mily");
+    expect(oneLine("👨‍👩‍👧 Family")).toBe("👨‍👩‍👧 Family");
   });
 });
 

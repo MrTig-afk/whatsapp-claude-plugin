@@ -63,6 +63,7 @@ if (!isStaticMode()) {
         "A permission request this terminal cannot send is now logged instead of vanishing.",
         "access allow refuses a bare number; status flags any already in the list (they match nobody).",
         "catch_up finds a chat by name whatever the capitalisation.",
+        "Hidden control characters in a chat name no longer garble catch_up's list.",
         "Sender-set attachment and reply fields can no longer break the message envelope.",
         "A failed IPC listener is reported as down, not as healthy.",
         "Your own reply in a group no longer marks a message that arrived just after it as answered.",
