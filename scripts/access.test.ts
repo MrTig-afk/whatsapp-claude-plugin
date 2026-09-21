@@ -143,6 +143,13 @@ describe("allowlist", () => {
     expect(access(dir).allowFrom).toEqual([]);
   });
 
+  test("a bare number is refused - the server would never match it", () => {
+    const dir = freshStateDir();
+    const res = run(dir, "allow", "886912345678");
+    expect(res.code).toBe(1);
+    expect(res.out).toContain("886912345678@s.whatsapp.net");
+  });
+
   test("removing someone who is not listed fails loudly", () => {
     const dir = freshStateDir();
     expect(run(dir, "remove", "nobody@s.whatsapp.net").code).toBe(1);

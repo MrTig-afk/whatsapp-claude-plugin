@@ -57,6 +57,18 @@ if (!isStaticMode()) {
   // latest.
   const CHANGELOG: { version: string; notes: string[] }[] = [
     {
+      version: "0.25.1",
+      notes: [
+        "A contact you removed can no longer approve a permission request by emoji reaction.",
+        "A permission request this terminal cannot send is now logged instead of vanishing.",
+        "access allow refuses a bare number; status flags any already in the list (they match nobody).",
+        "catch_up finds a chat by name whatever the capitalisation.",
+        "Sender-set attachment and reply fields can no longer break the message envelope.",
+        "A failed IPC listener is reported as down, not as healthy.",
+        "Your own reply in a group no longer marks a message that arrived just after it as answered.",
+      ],
+    },
+    {
       version: "0.25.0",
       notes: [
         "If you copied the permissions block from USAGE.md, copy it again - its ids were wrong until now.",

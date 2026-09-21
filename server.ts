@@ -751,6 +751,18 @@ async function startIpcListener(): Promise<void> {
       logDiag(`${LOG_PREFIX}: ipc: listener error: ${err}\n`);
       ipcServer = null;
     });
+    // WAIT FOR THE BIND TO SETTLE before returning. A losing bind reports
+    // through 'error' a tick later (measured on win32: never 'listening'),
+    // and the error handler above nulls ipcServer - so returning early let
+    // promoteAndConnect read it as healthy and omit the "IPC listener down"
+    // note written for exactly that case. Registered BEFORE listen()'s own
+    // callback: a writeIpcToken that throws there would otherwise stop these
+    // listeners running, and the await below would never return - leaving
+    // becomePrimary holding the lock without ever connecting.
+    const bound = new Promise<void>((settled) => {
+      server.once("listening", () => settled());
+      server.once("error", () => settled());
+    });
     server.listen(path, () => {
       token = writeIpcToken();
       logDiag(`${LOG_PREFIX}: ipc: listening on ${path}\n`);
@@ -759,6 +771,7 @@ async function startIpcListener(): Promise<void> {
     // line 1905): never the reason an orphan stays alive. Does not stop it
     // accepting connections.
     ipcServer = server;
+    await bound;
   } catch (err) {
     logDiag(`${LOG_PREFIX}: ipc: failed to start listener: ${err}\n`);
   }
@@ -3195,13 +3208,19 @@ mcp.setNotificationHandler(
         });
         trackSent(sent.key);
       }
-    } else if (!owner) {
+    } else {
       // Fail closed, but SAY SO: permissionTarget returns nothing when the
       // stored owner was revoked and the linked account is not yet known
-      // (before the first `open`), or when the allowlist is empty. Silently
-      // dropping it leaves Claude Code waiting on an approval nobody was sent.
+      // (before the first `open`), or when the allowlist is empty. And with
+      // no socket - a secondary terminal, or before the connection opens -
+      // there is nobody to send it through. Silently dropping either leaves
+      // Claude Code waiting on an approval nobody was sent.
       logDiag(
-        `permission_request ${request_id} not sent: no recipient (owner revoked and not connected yet, or empty allowlist)\n`,
+        `permission_request ${request_id} not sent: ${
+          owner
+            ? "this terminal has no WhatsApp connection (secondary, or not connected yet) - answer it in the terminal"
+            : "no recipient (owner revoked and not connected yet, or empty allowlist)"
+        }\n`,
       );
     }
   },
@@ -4440,9 +4459,12 @@ async function logOwnerHandReply(msg: WAMessage): Promise<void> {
   } catch {}
 
   const tsSec = Number(msg.messageTimestamp ?? 0);
+  // BEFORE the await, which is what markReplied's no-snapshot call relies
+  // on: resolveGroupName can take up to 10s, and a group message landing in
+  // that window was flipped to replied by a hand reply that never saw it.
+  markReplied(chatId);
   const groupName = isGroup ? await resolveGroupName(chatId) : undefined;
 
-  markReplied(chatId);
   persistMessage({
     id: msg.key.id ?? `hand-${Date.now()}`,
     chat_id: chatId,
@@ -4824,12 +4846,17 @@ async function handleMessage(msg: WAMessage, backlog = false): Promise<void> {
         ? {
             attachment_kind: attachment.kind,
             attachment_file_id: attachment.file_id,
-            ...(attachment.mime ? { attachment_mime: attachment.mime } : {}),
+            // The mimetype is whatever the SENDER's client wrote, the same
+            // class as the name below, so it gets the same safeName.
+            ...(attachment.mime
+              ? { attachment_mime: safeName(attachment.mime) }
+              : {}),
             ...(attachment.name ? { attachment_name: attachment.name } : {}),
           }
         : {}),
-      ...(replyToId ? { reply_to_id: replyToId } : {}),
-      ...(replyToSender ? { reply_to_sender: replyToSender } : {}),
+      // Also sender-supplied (contextInfo), so also envelope-safe.
+      ...(replyToId ? { reply_to_id: safeName(replyToId) } : {}),
+      ...(replyToSender ? { reply_to_sender: safeName(replyToSender) } : {}),
     },
   };
   mcp
@@ -5450,6 +5477,21 @@ async function connectWhatsApp(): Promise<void> {
         if (!reactorJid || !isAllowedJid(reactorJid, [pending.chatId])) {
           logDiag(
             `${LOG_PREFIX}: ignored permission reaction from ${reactorJid ? maskJid(reactorJid) : "unknown"} (not the chat we asked)\n`,
+          );
+          continue;
+        }
+        // STILL ALLOWLISTED, re-checked now, not when the request was sent.
+        // A typed "yes <id>" only reaches claimPermission after gate(), so a
+        // contact removed since the request went out is refused there - but
+        // reactions never pass gate(), and without this a revoked owner could
+        // still approve by emoji. fromMe is the linked account itself, which
+        // the typed path also trusts without gate() (its note-to-self).
+        if (
+          !reaction.key?.fromMe &&
+          !isAllowedJid(reactorJid, loadAccess().allowFrom)
+        ) {
+          logDiag(
+            `${LOG_PREFIX}: ignored permission reaction from ${maskJid(reactorJid)} (no longer allowlisted)\n`,
           );
           continue;
         }

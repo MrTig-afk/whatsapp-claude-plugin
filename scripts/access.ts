@@ -274,8 +274,11 @@ function status(): void {
   // wrong chat.
   const lidMap = loadLidMap();
   const ownerKey = contactKeyFor(lidMap, owner);
+  // `includes("@")` because the server refuses a bare number outright, while
+  // normalizeJid passes one through unchanged and would call it a match.
   const ownerAllowed =
-    !!owner && a.allowFrom.some((j) => contactKeyFor(lidMap, j) === ownerKey);
+    owner.includes("@") &&
+    a.allowFrom.some((j) => contactKeyFor(lidMap, j) === ownerKey);
   const ownerNote = !owner
     ? "  (unstamped — falling back to allowFrom[0])"
     : ownerAllowed
@@ -287,7 +290,10 @@ function status(): void {
     `owner:      ${owner || a.allowFrom[0] || "(none)"}${ownerNote}`,
     `            permission requests go here; change with "set owner <jid>"`,
     `allowFrom:  ${a.allowFrom.length} contact(s)`,
-    ...a.allowFrom.map((jid) => `  - ${jid}`),
+    ...a.allowFrom.map(
+      (jid) =>
+        `  - ${jid}${jid.includes("@") ? "" : "  (NOT A JID — matches nobody; re-add as <number>@s.whatsapp.net)"}`,
+    ),
   ];
   const pending = Object.entries(a.pending);
   lines.push(`pending:    ${pending.length}`);
@@ -1140,6 +1146,14 @@ switch (command) {
       die(`${(err as Error).message}\n\n${USAGE}`);
     }
     const jid = requireArg(positionals[0], "JID");
+    // The server never matches a bare number (isAllowedJid fails closed on
+    // it), so accepting one here printed "Allowed" for a contact who stays
+    // locked out - the CLI and the gate disagreeing about who has access.
+    if (!jid.includes("@")) {
+      die(
+        `"${jid}" is not a JID. Use the full form, e.g. ${jid}@s.whatsapp.net`,
+      );
+    }
     const a = load();
     if (a.allowFrom.includes(jid)) {
       process.stdout.write(`${jid} was already allowed.\n`);

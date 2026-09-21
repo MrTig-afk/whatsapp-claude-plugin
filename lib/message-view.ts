@@ -392,6 +392,9 @@ export function resolveChat(
   // that resolves to it and prints the whole thing, which is exactly the
   // "never guess a chat" rule this function exists to hold. Falling back to
   // the original leaves "…" matching nothing, and the caller says so.
+  // Lowercased HERE, not left to the caller: every comparison below is
+  // against a lowercased name or id, so a mixed-case `want` matched nothing.
+  want = want.toLowerCase();
   const asked = deEllipsised(want);
   const hits = candidates.filter(
     (c) =>

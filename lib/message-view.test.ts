@@ -1106,6 +1106,10 @@ describe("resolveChat - uniqueness, not a length floor", () => {
     expect(resolveChat([dm, other], "priya")).toEqual({ ok: true, chat: dm });
   });
 
+  test("case does not matter, whoever the caller is", () => {
+    expect(resolveChat([dm, other], "PRIYA")).toEqual({ ok: true, chat: dm });
+  });
+
   test("two chats sharing a name ASK - they never both print", () => {
     // F35/F44: a DM with Priya and a group an admin NAMED Priya. Printing both
     // is the dump this view exists to prevent; picking one can land a private
